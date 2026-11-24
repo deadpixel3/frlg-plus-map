@@ -772,6 +772,89 @@ def pack_components(components, maps_by_id, layouts, pad=4, max_row_w=160):
     return placed
 
 
+def place_cluster_near(placed, cluster, anchor_xy, maps_by_id, layouts, pad=2):
+    """Place a compact cluster {map_id: (rx, ry)} at the closest non-overlapping position to anchor_xy."""
+    if not cluster:
+        return
+    cw = max(x + layouts[maps_by_id[m]["layout"]]["width"] for m, (x, y) in cluster.items())
+    ch = max(y + layouts[maps_by_id[m]["layout"]]["height"] for m, (x, y) in cluster.items())
+
+    # Existing occupied rects with padding
+    occ = []
+    for m, (ox, oy) in placed.items():
+        lay = layouts[maps_by_id[m]["layout"]]
+        occ.append((ox - pad, oy - pad, ox + lay["width"] + pad, oy + lay["height"] + pad))
+
+    def overlaps(x0, y0):
+        x1, y1 = x0 + cw, y0 + ch
+        for rx0, ry0, rx1, ry1 in occ:
+            if x0 < rx1 and x1 > rx0 and y0 < ry1 and y1 > ry0:
+                return True
+        return False
+
+    ax, ay = int(anchor_xy[0] - cw // 2), int(anchor_xy[1] - ch // 2)
+    best = None
+    best_dist = 1e18
+
+    # Search in expanding rings (step 4 metatiles for speed)
+    step = 4
+    for r in range(0, 260, step):
+        if best is not None and r * r > best_dist:
+            break
+        candidates = []
+        if r == 0:
+            candidates.append((ax, ay))
+        else:
+            for dx in range(-r, r + 1, step):
+                candidates.append((ax + dx, ay - r))
+                candidates.append((ax + dx, ay + r))
+            for dy in range(-r + step, r, step):
+                candidates.append((ax - r, ay + dy))
+                candidates.append((ax + r, ay + dy))
+        for cx, cy in candidates:
+            if not overlaps(cx, cy):
+                # Distance from cluster center to anchor
+                dx = (cx + cw / 2) - anchor_xy[0]
+                dy = (cy + ch / 2) - anchor_xy[1]
+                d2 = dx * dx + dy * dy
+                if d2 < best_dist:
+                    best_dist = d2
+                    best = (cx, cy)
+
+    bx, by = best if best is not None else (ax, ay)
+    for m, (rx, ry) in cluster.items():
+        placed[m] = (bx + rx, by + ry)
+
+
+def normalize_positions(pos, pad=3):
+    min_x = min(x for x, _ in pos.values())
+    min_y = min(y for _, y in pos.values())
+    return {m: (x - min_x + pad, y - min_y + pad) for m, (x, y) in pos.items()}
+
+
+def draw_rect_border(canvas, w_px, h_px, x0, y0, rw, rh, color=(148, 163, 184), thickness=2):
+    stride = w_px * 3
+    r, g, b = color
+    for t in range(thickness):
+        # Top and bottom edges
+        for py in (y0 - 1 - t, y0 + rh + t):
+            if 0 <= py < h_px:
+                row_off = py * stride
+                for px in range(max(0, x0 - 1 - t), min(w_px, x0 + rw + 1 + t)):
+                    off = row_off + px * 3
+                    canvas[off] = r
+                    canvas[off + 1] = g
+                    canvas[off + 2] = b
+        # Left and right edges
+        for px in (x0 - 1 - t, x0 + rw + t):
+            if 0 <= px < w_px:
+                for py in range(max(0, y0 - 1 - t), min(h_px, y0 + rh + 1 + t)):
+                    off = py * stride + px * 3
+                    canvas[off] = r
+                    canvas[off + 1] = g
+                    canvas[off + 2] = b
+
+
 def read_png_palette(path):
     """Extract RGB tuples from an indexed PNG's PLTE chunk."""
     data = Path(path).read_bytes()
@@ -825,9 +908,9 @@ def blit_sprite_into_canvas(canvas, canvas_w_px, canvas_h_px, x_px, y_px, sprite
             canvas[off + 2] = b
 
 
-def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, hm_sprites=None, bg_rgb=(15, 23, 42)):
+def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, hm_sprites=None, framed_maps=None, bg_rgb=(15, 23, 42)):
     """Render all maps in map_positions onto one PNG and return (width_px, height_px)."""
-    pad = 2
+    pad = 3
     max_x = max(x + layouts[maps_by_id[m]["layout"]]["width"] for m, (x, y) in map_positions.items()) + pad
     max_y = max(y + layouts[maps_by_id[m]["layout"]]["height"] for m, (x, y) in map_positions.items()) + pad
     w_px = max_x * 16
@@ -845,6 +928,12 @@ def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, hm_spri
                         canvas, w_px, h_px,
                         (mx + obj["x"]) * 16, (my + obj["y"]) * 16, sp
                     )
+        if framed_maps and mid in framed_maps:
+            draw_rect_border(
+                canvas, w_px, h_px,
+                mx * 16, my * 16, layout["width"] * 16, layout["height"] * 16,
+                color=(148, 163, 184), thickness=2
+            )
     out_path = OUT_MAPS / f"{layer_id}.png"
     write_rgb_png(out_path, w_px, h_px, canvas)
     return w_px, h_px
@@ -1018,10 +1107,10 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
             if not dest or dest == "MAP_DYNAMIC":
                 continue
             px, py = make_xy(w["x"], w["y"])
-            # Link to a dungeon layer!
-            if dest in dungeon_lookup and dungeon_lookup[dest][0] != layer_id:
-                d_layer, d_label = dungeon_lookup[dest]
-                key = ("dungeon", d_layer, w["x"] // 2, w["y"] // 2)
+            # Link to a nearby dungeon / indoor area!
+            if dest in dungeon_lookup and mdata["id"] not in dungeon_lookup:
+                d_info = dungeon_lookup[dest]
+                key = ("dungeon", d_info["id"], w["x"] // 2, w["y"] // 2)
                 if key not in seen_dest:
                     seen_dest.add(key)
                     markers.append({
@@ -1029,12 +1118,17 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
                         "layer": layer_id,
                         "category": "location",
                         "sub": "Dungeon Entrance",
-                        "title": f"Entrance: {d_label}",
+                        "title": f"Entrance: {d_info['name']}",
                         "map": map_name,
                         "x": px,
                         "y": py,
-                        "targetLayer": d_layer,
-                        "details": f"Click to jump directly to the {d_label} interactive map.",
+                        "targetPoint": {
+                            "layer": d_info["layer"],
+                            "x": d_info["x"],
+                            "y": d_info["y"],
+                            "name": d_info["name"],
+                        },
+                        "details": f"Placed right nearby on this map. Click below to pan straight to {d_info['name']}.",
                     })
             elif "_GYM" in dest and ("gym", dest) not in seen_dest:
                 seen_dest.add(("gym", dest))
@@ -1118,109 +1212,183 @@ def main():
     }
     print(f"   Loaded {len(maps_by_id)} maps, {len(items_db)} items, {len(trainers_db)} trainers, {len(masters_db)} master trainers, {len(encounters_db)} wild encounter areas.")
 
-    # Define all layers!
-    # 1) Kanto Overworld
+    # Define unified overworld maps with all caves & dungeons placed right next to their entrances!
+    # 1) Kanto Overworld base
     kanto_pos = bfs_stitch(
         "MAP_SAFFRON_CITY",
         maps_by_id,
         layouts,
         replace_map={"MAP_SAFFRON_CITY_CONNECTION": "MAP_SAFFRON_CITY"},
     )
+    kanto_overworld_ids = set(kanto_pos.keys())
 
-    # 2) Sevii Islands & FRLG+ Bonus Islands
-    sevii_starts = [
-        "MAP_ONE_ISLAND",
-        "MAP_TWO_ISLAND",
-        "MAP_THREE_ISLAND",
-        "MAP_FOUR_ISLAND",
-        "MAP_FIVE_ISLAND",
-        "MAP_SIX_ISLAND",
-        "MAP_SEVEN_ISLAND",
-        "MAP_BATTLE_FRONTIER_OUTSIDE_WEST",
+    # Kanto dungeons: (id, label, anchor_map_name, map_list, max_row_w)
+    kanto_dungeons = [
+        ("viridian_forest", "Viridian Forest", "Route2", ["ViridianForest"], 80),
+        ("mt_moon", "Mt. Moon", "Route4", ["MtMoon_1F", "MtMoon_B1F", "MtMoon_B2F"], 90),
+        ("ss_anne", "S.S. Anne", "VermilionCity", ["SSAnne_Exterior", "SSAnne_1F_Corridor", "SSAnne_2F_Corridor", "SSAnne_3F_Corridor", "SSAnne_B1F_Corridor", "SSAnne_Deck", "SSAnne_Kitchen", "SSAnne_CaptainsOffice"], 95),
+        ("digletts_cave", "Diglett's Cave", "Route11", ["DiglettsCave_NorthEntrance", "DiglettsCave_B1F", "DiglettsCave_SouthEntrance"], 90),
+        ("rock_tunnel", "Rock Tunnel", "Route10", ["RockTunnel_1F", "RockTunnel_B1F"], 90),
+        ("power_plant", "Power Plant", "Route10", ["PowerPlant"], 70),
+        ("pokemon_tower", "Pokémon Tower", "LavenderTown", [f"PokemonTower_{i}F" for i in range(1, 8)], 90),
+        ("rocket_hideout", "Rocket Hideout", "CeladonCity", ["RocketHideout_B1F", "RocketHideout_B2F", "RocketHideout_B3F", "RocketHideout_B4F"], 85),
+        ("silph_co", "Silph Co.", "SaffronCity", [f"SilphCo_{i}F" for i in range(1, 12)], 105),
+        ("safari_zone", "Safari Zone (+ FRLG+ Zones)", "FuchsiaCity", ["SafariZone_Center", "SafariZone_East", "SafariZone_North", "SafariZone_West", "SafariZone_NorthWest", "SafariZone_NorthEast"], 115),
+        ("seafoam_islands", "Seafoam Islands", "Route20", ["SeafoamIslands_1F", "SeafoamIslands_B1F", "SeafoamIslands_B2F", "SeafoamIslands_B3F", "SeafoamIslands_B4F"], 105),
+        ("pokemon_mansion", "Pokémon Mansion", "CinnabarIsland", ["PokemonMansion_1F", "PokemonMansion_2F", "PokemonMansion_3F", "PokemonMansion_B1F"], 95),
+        ("victory_road", "Victory Road", "Route23", ["VictoryRoad_1F", "VictoryRoad_2F", "VictoryRoad_3F"], 85),
+        ("cerulean_cave", "Cerulean Cave", "CeruleanCity", ["CeruleanCave_1F", "CeruleanCave_2F", "CeruleanCave_B1F"], 90),
+        ("route20_underwater", "Route 20 Underwater (FRLG+)", "Route20", ["Route20_Underwater"], 90),
     ]
-    sevii_comps = [bfs_stitch(s, maps_by_id, layouts) for s in sevii_starts if s in maps_by_id]
-    # Add standalone bonus outdoor maps to Sevii sheet
-    bonus_outdoor = [
-        "MAP_FOUR_ISLAND_BASE",
-        "MAP_BIRTH_ISLAND_EXTERIOR",
-        "MAP_NAVEL_ROCK_EXTERIOR",
-        "MAP_FARAWAY_ISLAND_EXTERIOR",
-        "MAP_FARAWAY_ISLAND_INTERIOR",
-        "MAP_SOUTHERN_ISLAND_EXTERIOR",
-        "MAP_SOUTHERN_ISLAND_INTERIOR",
-        "MAP_THREE_ISLAND_BERRY_FOREST",
-        "MAP_SIX_ISLAND_PATTERN_BUSH",
-        "MAP_ROUTE20_UNDERWATER",
-        "MAP_THREE_ISLAND_BOND_BRIDGE_UNDERWATER",
-    ]
-    for mid in bonus_outdoor:
-        if mid in maps_by_id:
-            sevii_comps.append({mid: (0, 0)})
-    sevii_pos = pack_components(sevii_comps, maps_by_id, layouts, pad=6, max_row_w=420)
 
-    # 3) Major Caves & Dungeons (each as a dedicated layer)
-    dungeon_specs = [
-        ("viridian_forest", "Viridian Forest", "Kanto Dungeons", ["ViridianForest"]),
-        ("mt_moon", "Mt. Moon", "Kanto Dungeons", ["MtMoon_1F", "MtMoon_B1F", "MtMoon_B2F"]),
-        ("ss_anne", "S.S. Anne", "Kanto Dungeons", ["SSAnne_Exterior", "SSAnne_1F_Corridor", "SSAnne_2F_Corridor", "SSAnne_3F_Corridor", "SSAnne_B1F_Corridor", "SSAnne_Deck", "SSAnne_Kitchen", "SSAnne_CaptainsOffice"]),
-        ("digletts_cave", "Diglett's Cave", "Kanto Dungeons", ["DiglettsCave_NorthEntrance", "DiglettsCave_B1F", "DiglettsCave_SouthEntrance"]),
-        ("rock_tunnel", "Rock Tunnel", "Kanto Dungeons", ["RockTunnel_1F", "RockTunnel_B1F"]),
-        ("pokemon_tower", "Pokémon Tower", "Kanto Dungeons", [f"PokemonTower_{i}F" for i in range(1, 8)]),
-        ("rocket_hideout", "Rocket Hideout", "Kanto Dungeons", ["RocketHideout_B1F", "RocketHideout_B2F", "RocketHideout_B3F", "RocketHideout_B4F"]),
-        ("silph_co", "Silph Co.", "Kanto Dungeons", [f"SilphCo_{i}F" for i in range(1, 12)]),
-        ("safari_zone", "Safari Zone (+ FRLG+ Zones)", "Kanto Dungeons", ["SafariZone_Center", "SafariZone_East", "SafariZone_North", "SafariZone_West", "SafariZone_NorthWest", "SafariZone_NorthEast"]),
-        ("power_plant", "Power Plant", "Kanto Dungeons", ["PowerPlant"]),
-        ("seafoam_islands", "Seafoam Islands", "Kanto Dungeons", ["SeafoamIslands_1F", "SeafoamIslands_B1F", "SeafoamIslands_B2F", "SeafoamIslands_B3F", "SeafoamIslands_B4F"]),
-        ("pokemon_mansion", "Pokémon Mansion", "Kanto Dungeons", ["PokemonMansion_1F", "PokemonMansion_2F", "PokemonMansion_3F", "PokemonMansion_B1F"]),
-        ("victory_road", "Victory Road", "Kanto Dungeons", ["VictoryRoad_1F", "VictoryRoad_2F", "VictoryRoad_3F"]),
-        ("cerulean_cave", "Cerulean Cave", "Kanto Dungeons", ["CeruleanCave_1F", "CeruleanCave_2F", "CeruleanCave_B1F"]),
+    framed_kanto = set()
+    for did, dlabel, anchor_name, mnames, mw in kanto_dungeons:
+        comps = [{maps_by_name[mn]["id"]: (0, 0)} for mn in mnames if mn in maps_by_name]
+        cluster = pack_components(comps, maps_by_id, layouts, pad=2, max_row_w=mw)
+        amap_id = maps_by_name[anchor_name]["id"]
+        ax, ay = kanto_pos[amap_id]
+        alay = layouts[maps_by_id[amap_id]["layout"]]
+        place_cluster_near(kanto_pos, cluster, (ax + alay["width"] // 2, ay + alay["height"] // 2), maps_by_id, layouts, pad=3)
+        framed_kanto.update(cluster.keys())
+    kanto_pos = normalize_positions(kanto_pos, pad=3)
+
+    # 2) Sevii Islands & FRLG+ Bonus Islands — each island clustered with its OWN caves right beside it!
+    def build_island_cluster(start_map, attached_dungeons):
+        cpos = bfs_stitch(start_map, maps_by_id, layouts) if start_map in maps_by_id else {}
+        framed = set()
+        for anchor_name, mnames, mw in attached_dungeons:
+            comps = [{maps_by_name[mn]["id"]: (0, 0)} for mn in mnames if mn in maps_by_name]
+            if not comps:
+                continue
+            sub = pack_components(comps, maps_by_id, layouts, pad=2, max_row_w=mw)
+            amap_id = maps_by_name.get(anchor_name, {}).get("id", start_map)
+            if amap_id in cpos:
+                ax, ay = cpos[amap_id]
+                alay = layouts[maps_by_id[amap_id]["layout"]]
+                anchor = (ax + alay["width"] // 2, ay + alay["height"] // 2)
+            else:
+                anchor = (0, 0)
+            place_cluster_near(cpos, sub, anchor, maps_by_id, layouts, pad=2)
+            framed.update(sub.keys())
+        return normalize_positions(cpos, pad=0), framed
+
+    sevii_cluster_specs = [
+        ("MAP_ONE_ISLAND", [
+            ("OneIsland_KindleRoad", ["MtEmber_Exterior", "MtEmber_SummitPath_1F", "MtEmber_SummitPath_2F", "MtEmber_SummitPath_3F", "MtEmber_Summit", "MtEmber_RubyPath_1F", "MtEmber_RubyPath_B1F", "MtEmber_RubyPath_B2F", "MtEmber_RubyPath_B3F", "MtEmber_RubyPath_B4F", "MtEmber_RubyPath_B5F"], 100),
+        ]),
+        ("MAP_TWO_ISLAND", []),
+        ("MAP_THREE_ISLAND", [
+            ("ThreeIsland_Port", ["ThreeIsland_DunsparceTunnel"], 60),
+            ("ThreeIsland_BondBridge", ["ThreeIsland_BerryForest", "ThreeIsland_BondBridge_Underwater"], 90),
+        ]),
+        ("MAP_FOUR_ISLAND", [
+            ("FourIsland", ["FourIsland_IcefallCave_Entrance", "FourIsland_IcefallCave_1F", "FourIsland_IcefallCave_B1F", "FourIsland_IcefallCave_Back", "FourIsland_Base"], 85),
+        ]),
+        ("MAP_FIVE_ISLAND", [
+            ("FiveIsland_Meadow", ["FiveIsland_RocketWarehouse"], 60),
+            ("FiveIsland_ResortGorgeous", ["FiveIsland_LostCave_Entrance"] + [f"FiveIsland_LostCave_Room{i}" for i in range(1, 15)], 110),
+        ]),
+        ("MAP_SIX_ISLAND", [
+            ("SixIsland_GreenPath", ["SixIsland_PatternBush", "SixIsland_AlteringCave"], 90),
+            ("SixIsland_RuinValley", ["SixIsland_DottedHole_1F", "SixIsland_DottedHole_B1F", "SixIsland_DottedHole_B2F", "SixIsland_DottedHole_B3F", "SixIsland_DottedHole_B4F", "SixIsland_DottedHole_SapphireRoom"], 90),
+        ]),
+        ("MAP_SEVEN_ISLAND", [
+            ("SevenIsland_TanobyRuins", ["SevenIsland_SevaultCanyon_TanobyKey", "SevenIsland_TanobyRuins_MoneanChamber", "SevenIsland_TanobyRuins_LiptooChamber", "SevenIsland_TanobyRuins_WeepthChamber", "SevenIsland_TanobyRuins_DilfordChamber", "SevenIsland_TanobyRuins_ScufibChamber", "SevenIsland_TanobyRuins_RixyChamber", "SevenIsland_TanobyRuins_ViapoisChamber"], 105),
+        ]),
+        ("MAP_BATTLE_FRONTIER_OUTSIDE_WEST", [
+            ("BattleFrontier_OutsideEast", ["ArtisanCave_1F", "ArtisanCave_B1F"], 80),
+        ]),
+        ("MAP_NAVEL_ROCK_EXTERIOR", [
+            ("NavelRock_Exterior", ["NavelRock_1F", "NavelRock_B1F", "NavelRock_Fork", "NavelRock_Summit", "NavelRock_Base"], 100),
+        ]),
+        ("MAP_BIRTH_ISLAND_EXTERIOR", []),
+        ("MAP_FARAWAY_ISLAND_EXTERIOR", [
+            ("FarawayIsland_Exterior", ["FarawayIsland_Interior"], 60),
+        ]),
+        ("MAP_SOUTHERN_ISLAND_EXTERIOR", [
+            ("SouthernIsland_Exterior", ["SouthernIsland_Interior"], 60),
+        ]),
+    ]
+
+    sevii_clusters = []
+    framed_sevii = set()
+    for start_id, attached in sevii_cluster_specs:
+        if start_id in maps_by_id:
+            cpos, fset = build_island_cluster(start_id, attached)
+            sevii_clusters.append(cpos)
+            framed_sevii.update(fset)
+    sevii_pos = pack_components(sevii_clusters, maps_by_id, layouts, pad=6, max_row_w=460)
+    sevii_pos = normalize_positions(sevii_pos, pad=3)
+
+    # Quick Jump list & dungeon entrance lookup (every dungeon points straight to its coordinates on Kanto or Sevii!)
+    sevii_dungeon_specs = [
         ("mt_ember", "Mt. Ember", "Sevii & Bonus Dungeons", ["MtEmber_Exterior", "MtEmber_SummitPath_1F", "MtEmber_SummitPath_2F", "MtEmber_SummitPath_3F", "MtEmber_Summit", "MtEmber_RubyPath_1F", "MtEmber_RubyPath_B1F", "MtEmber_RubyPath_B2F", "MtEmber_RubyPath_B3F", "MtEmber_RubyPath_B4F", "MtEmber_RubyPath_B5F"]),
+        ("dunsparce_tunnel", "Three Isle Path (Dunsparce Tunnel)", "Sevii & Bonus Dungeons", ["ThreeIsland_DunsparceTunnel"]),
+        ("berry_forest", "Berry Forest", "Sevii & Bonus Dungeons", ["ThreeIsland_BerryForest"]),
         ("icefall_cave", "Icefall Cave", "Sevii & Bonus Dungeons", ["FourIsland_IcefallCave_Entrance", "FourIsland_IcefallCave_1F", "FourIsland_IcefallCave_B1F", "FourIsland_IcefallCave_Back"]),
         ("rocket_warehouse", "Rocket Warehouse", "Sevii & Bonus Dungeons", ["FiveIsland_RocketWarehouse"]),
         ("lost_cave", "Lost Cave", "Sevii & Bonus Dungeons", ["FiveIsland_LostCave_Entrance"] + [f"FiveIsland_LostCave_Room{i}" for i in range(1, 15)]),
+        ("pattern_bush", "Pattern Bush", "Sevii & Bonus Dungeons", ["SixIsland_PatternBush"]),
+        ("altering_cave", "Altering Cave", "Sevii & Bonus Dungeons", ["SixIsland_AlteringCave"]),
         ("dotted_hole", "Dotted Hole", "Sevii & Bonus Dungeons", ["SixIsland_DottedHole_1F", "SixIsland_DottedHole_B1F", "SixIsland_DottedHole_B2F", "SixIsland_DottedHole_B3F", "SixIsland_DottedHole_B4F", "SixIsland_DottedHole_SapphireRoom"]),
         ("tanoby_ruins", "Tanoby Chambers & Key", "Sevii & Bonus Dungeons", ["SevenIsland_SevaultCanyon_TanobyKey", "SevenIsland_TanobyRuins_MoneanChamber", "SevenIsland_TanobyRuins_LiptooChamber", "SevenIsland_TanobyRuins_WeepthChamber", "SevenIsland_TanobyRuins_DilfordChamber", "SevenIsland_TanobyRuins_ScufibChamber", "SevenIsland_TanobyRuins_RixyChamber", "SevenIsland_TanobyRuins_ViapoisChamber"]),
-        ("altering_cave", "Altering Cave & Dunsparce Tunnel", "Sevii & Bonus Dungeons", ["SixIsland_AlteringCave", "ThreeIsland_DunsparceTunnel"]),
         ("navel_rock", "Navel Rock", "Sevii & Bonus Dungeons", ["NavelRock_1F", "NavelRock_B1F", "NavelRock_Fork", "NavelRock_Summit", "NavelRock_Base"]),
         ("artisan_cave", "Artisan Cave (FRLG+)", "Sevii & Bonus Dungeons", ["ArtisanCave_1F", "ArtisanCave_B1F"]),
+        ("battle_frontier", "Battle Frontier (FRLG+)", "Sevii & Bonus Dungeons", ["BattleFrontier_OutsideWest", "BattleFrontier_OutsideEast"]),
+        ("faraway_island", "Faraway Island (FRLG+)", "Sevii & Bonus Dungeons", ["FarawayIsland_Exterior", "FarawayIsland_Interior"]),
+        ("southern_island", "Southern Island (FRLG+)", "Sevii & Bonus Dungeons", ["SouthernIsland_Exterior", "SouthernIsland_Interior"]),
     ]
 
-    # Build lookup from dest_map -> (layer_id, label) for dungeon entrance warps
+    quick_jumps = []
     dungeon_lookup = {}
-    for lid, label, _, mnames in dungeon_specs:
-        for mn in mnames:
-            if mn in maps_by_name:
-                dungeon_lookup[maps_by_name[mn]["id"]] = (lid, label)
-    # Also map ViridianForest entrance buildings to viridian_forest
-    for extra_id, target in [
-        ("MAP_ROUTE2_VIRIDIAN_FOREST_SOUTH_ENTRANCE", ("viridian_forest", "Viridian Forest")),
-        ("MAP_ROUTE2_VIRIDIAN_FOREST_NORTH_ENTRANCE", ("viridian_forest", "Viridian Forest")),
-        ("MAP_FUCHSIA_CITY_SAFARI_ZONE_ENTRANCE", ("safari_zone", "Safari Zone (+ FRLG+ Zones)")),
+
+    def register_jump(jid, jname, jgroup, layer_id, pos_dict, mnames):
+        mids = [maps_by_name[mn]["id"] for mn in mnames if mn in maps_by_name and maps_by_name[mn]["id"] in pos_dict]
+        if not mids:
+            return
+        # Center on the first (entrance) map of this dungeon
+        first_mid = mids[0]
+        ox, oy = pos_dict[first_mid]
+        lay = layouts[maps_by_id[first_mid]["layout"]]
+        cx = (ox + lay["width"] / 2) * 16
+        cy = (oy + lay["height"] / 2) * 16
+        info = {"id": jid, "name": jname, "group": jgroup, "layer": layer_id, "x": int(cx), "y": int(cy)}
+        quick_jumps.append(info)
+        for mid in mids:
+            dungeon_lookup[mid] = info
+
+    for did, dlabel, _, mnames, _ in kanto_dungeons:
+        register_jump(did, dlabel, "Kanto Dungeons (Jump)", "kanto", kanto_pos, mnames)
+    for did, dlabel, dgroup, mnames in sevii_dungeon_specs:
+        register_jump(did, dlabel, "Sevii & Bonus (Jump)", "sevii", sevii_pos, mnames)
+
+    # Extra gatehouse warps
+    for extra_id, target_key in [
+        ("MAP_ROUTE2_VIRIDIAN_FOREST_SOUTH_ENTRANCE", "MAP_VIRIDIAN_FOREST"),
+        ("MAP_ROUTE2_VIRIDIAN_FOREST_NORTH_ENTRANCE", "MAP_VIRIDIAN_FOREST"),
+        ("MAP_FUCHSIA_CITY_SAFARI_ZONE_ENTRANCE", "MAP_SAFARI_ZONE_CENTER"),
     ]:
-        dungeon_lookup[extra_id] = target
+        if target_key in dungeon_lookup:
+            dungeon_lookup[extra_id] = dungeon_lookup[target_key]
 
     all_layers_def = [
-        ("kanto", "Kanto Overworld", "Overworld", kanto_pos),
-        ("sevii", "Sevii & Bonus Islands (FRLG+)", "Overworld", sevii_pos),
+        ("kanto", "Kanto Overworld & Dungeons", "Overworld", kanto_pos, framed_kanto),
+        ("sevii", "Sevii & Bonus Islands (+ Dungeons)", "Overworld", sevii_pos, framed_sevii),
     ]
-    for lid, label, group, mnames in dungeon_specs:
-        comps = [{maps_by_name[mn]["id"]: (0, 0)} for mn in mnames if mn in maps_by_name]
-        pos = pack_components(comps, maps_by_id, layouts, pad=3, max_row_w=130)
-        all_layers_def.append((lid, label, group, pos))
 
     # Track which maps are rendered directly on some layer
     rendered_maps = set()
-    for _, _, _, pos in all_layers_def:
+    for _, _, _, pos, _ in all_layers_def:
         rendered_maps.update(pos.keys())
 
     # Render PNGs & extract zones + markers
     layers_meta = []
     all_markers = []
 
-    print(f"2. Rendering {len(all_layers_def)} map layers to PNG and extracting markers...")
-    for lid, label, group, pos in all_layers_def:
+    print(f"2. Rendering {len(all_layers_def)} unified map layers to PNG and extracting markers...")
+    for lid, label, group, pos, framed_set in all_layers_def:
         t_layer = time.time()
-        w_px, h_px = render_layer(lid, pos, maps_by_id, layouts, ts_cache, hm_sprites=hm_sprites)
+        w_px, h_px = render_layer(lid, pos, maps_by_id, layouts, ts_cache, hm_sprites=hm_sprites, framed_maps=framed_set)
 
         zones = []
         layer_markers = []
@@ -1301,6 +1469,7 @@ def main():
             "totalMarkers": len(all_markers),
         },
         "speciesTypes": species_types,
+        "quickJumps": quick_jumps,
         "layers": layers_meta,
         "markers": all_markers,
     }

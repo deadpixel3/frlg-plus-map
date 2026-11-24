@@ -641,6 +641,29 @@ html, body {
   box-shadow: var(--shadow);
 }
 
+.floating-back-btn {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 26;
+  background: rgba(17, 24, 39, 0.94);
+  color: #e0f2fe;
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  transition: 0.14s;
+}
+
+.floating-back-btn:hover {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: var(--accent-blue);
+}
+
 .hud-pill {
   position: absolute;
   top: 14px;

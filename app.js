@@ -131,6 +131,7 @@
     showLabels: true,
     selectedMarkerId: null,
     selectedZoneId: null,
+    cameraHistory: [],
     // Viewport transform
     scale: 0.25,
     minScale: 0.1,
@@ -166,6 +167,43 @@
   const elDrawer = $("detail-drawer");
   const elDrawerBadge = $("drawer-badge");
   const elDrawerBody = $("drawer-body");
+  const elBackBtn = $("btn-back-camera");
+
+  function pushCameraHistory(label) {
+    state.cameraHistory.push({
+      layerId: state.layerId,
+      tx: state.tx,
+      ty: state.ty,
+      scale: state.scale,
+      label: label || "Previous spot",
+    });
+    if (state.cameraHistory.length > 20) state.cameraHistory.shift();
+    updateBackButton();
+  }
+
+  function updateBackButton() {
+    if (!state.cameraHistory.length) {
+      elBackBtn.classList.add("hidden");
+      return;
+    }
+    const last = state.cameraHistory[state.cameraHistory.length - 1];
+    elBackBtn.textContent = `← Back to ${last.label}`;
+    elBackBtn.classList.remove("hidden");
+  }
+
+  function popCameraHistory() {
+    const prev = state.cameraHistory.pop();
+    updateBackButton();
+    if (!prev) return;
+    closeDrawer();
+    if (state.layerId !== prev.layerId) {
+      loadLayer(prev.layerId, false);
+    }
+    state.scale = prev.scale;
+    state.tx = prev.tx;
+    state.ty = prev.ty;
+    applyTransform();
+  }
 
   // ---------------- Persistence ----------------
 
@@ -260,21 +298,25 @@
     const groups = new Map();
     for (const l of state.data.layers) {
       if (!groups.has(l.group)) groups.set(l.group, []);
-      groups.get(l.group).push(l);
+      groups.get(l.group).push({ value: `layer:${l.id}`, text: `${l.name} (${l.markerCount})` });
+    }
+    for (const j of state.data.quickJumps || []) {
+      if (!groups.has(j.group)) groups.set(j.group, []);
+      groups.get(j.group).push({ value: `jump:${j.id}`, text: `↳ ${j.name}` });
     }
     elLayerSelect.innerHTML = "";
-    for (const [grp, layers] of groups.entries()) {
+    for (const [grp, opts] of groups.entries()) {
       const og = document.createElement("optgroup");
       og.label = grp;
-      for (const l of layers) {
+      for (const o of opts) {
         const opt = document.createElement("option");
-        opt.value = l.id;
-        opt.textContent = `${l.name} (${l.markerCount})`;
+        opt.value = o.value;
+        opt.textContent = o.text;
         og.appendChild(opt);
       }
       elLayerSelect.appendChild(og);
     }
-    elLayerSelect.value = state.layerId;
+    elLayerSelect.value = `layer:${state.layerId}`;
   }
 
   function renderCategories() {
@@ -410,7 +452,7 @@
     state.layerId = layerId;
     state.selectedMarkerId = null;
     state.selectedZoneId = null;
-    elLayerSelect.value = layerId;
+    elLayerSelect.value = `layer:${layerId}`;
     const layer = getLayer(layerId);
     elStage.style.width = `${layer.width}px`;
     elStage.style.height = `${layer.height}px`;
@@ -481,7 +523,13 @@
       `;
     }
 
-    if (m.targetLayer) {
+    if (m.targetPoint) {
+      html += `
+        <button id="btn-jump-point" class="primary-btn" style="width:100%;padding:10px;margin-bottom:14px;">
+          Pan to ${escapeHtml(m.targetPoint.name)} →
+        </button>
+      `;
+    } else if (m.targetLayer) {
       const target = getLayer(m.targetLayer);
       html += `
         <button id="btn-jump-layer" class="primary-btn" style="width:100%;padding:10px;margin-bottom:14px;">
@@ -542,9 +590,22 @@
       });
     }
 
+    const btnJumpPt = $("btn-jump-point");
+    if (btnJumpPt && m.targetPoint) {
+      btnJumpPt.addEventListener("click", () => {
+        pushCameraHistory(m.map);
+        closeDrawer();
+        if (state.layerId !== m.targetPoint.layer) {
+          loadLayer(m.targetPoint.layer, false);
+        }
+        focusPoint(m.targetPoint.x, m.targetPoint.y, 1.0);
+      });
+    }
+
     const btnJump = $("btn-jump-layer");
     if (btnJump) {
       btnJump.addEventListener("click", () => {
+        pushCameraHistory(m.map);
         closeDrawer();
         loadLayer(m.targetLayer, true);
       });
@@ -737,9 +798,24 @@
 
   function bindEvents() {
     elLayerSelect.addEventListener("change", () => {
+      const val = elLayerSelect.value;
       closeDrawer();
-      loadLayer(elLayerSelect.value, true);
+      if (val.startsWith("jump:")) {
+        const jid = val.slice(5);
+        const j = (state.data.quickJumps || []).find((x) => x.id === jid);
+        if (j) {
+          pushCameraHistory(getLayer().name.split(" ")[0]);
+          if (state.layerId !== j.layer) loadLayer(j.layer, false);
+          focusPoint(j.x, j.y, 1.0);
+          elLayerSelect.value = `layer:${state.layerId}`;
+        }
+      } else {
+        const lid = val.replace(/^layer:/, "");
+        loadLayer(lid, true);
+      }
     });
+
+    elBackBtn.addEventListener("click", popCameraHistory);
 
     elSearchInput.addEventListener("input", () => runSearch(elSearchInput.value));
     elSearchInput.addEventListener("focus", () => {
