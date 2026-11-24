@@ -124,7 +124,7 @@
   const state = {
     data: null,
     layerId: "kanto",
-    version: "FR",
+    version: "BOTH",
     activeCategories: new Set(Object.keys(CATEGORIES)),
     foundIds: new Set(),
     hideFound: false,
@@ -624,39 +624,109 @@
     elDrawerBadge.style.border = "1px solid rgba(56, 189, 248, 0.5)";
     elDrawerBadge.textContent = "🗺️ Area Details";
 
+    const verLabel =
+      state.version === "BOTH" ? "FireRed & LeafGreen" : state.version === "FR" ? "FireRed" : "LeafGreen";
     let html = `
       <div class="drawer-title">${escapeHtml(z.name)}</div>
       <div class="drawer-meta">
-        <span>Version: <strong>${state.version === "FR" ? "FireRed" : "LeafGreen"}</strong></span>
+        <span>Version: <strong>${verLabel}</strong></span>
       </div>
     `;
 
-    // Wild Encounters
-    const encVer = z.encounters ? z.encounters[state.version] : null;
-    if (encVer && Object.keys(encVer).length) {
-      for (const [method, mons] of Object.entries(encVer)) {
-        html += `
-          <div class="enc-group">
-            <div class="enc-group-title">${ENC_LABELS[method] || method}</div>
-            <table class="enc-table">
-              <thead><tr><th>Pokémon</th><th>Level</th><th>Rate</th></tr></thead>
-              <tbody>
-                ${mons.map((p) => `
-                  <tr>
-                    <td>
-                      <div class="enc-species-cell">
-                        <strong>${escapeHtml(p.species)}</strong>
-                        ${renderSpeciesTypes(p.species, true)}
-                      </div>
-                    </td>
-                    <td>Lv. ${p.min === p.max ? p.min : `${p.min}–${p.max}`}</td>
-                    <td class="enc-rate">${p.rate}%</td>
-                  </tr>
-                `).join("")}
-              </tbody>
-            </table>
-          </div>
-        `;
+    // Wild Encounters (supports Both FR+LG side-by-side like Bulbapedia, or single version)
+    const encFR = (z.encounters && z.encounters.FR) || {};
+    const encLG = (z.encounters && z.encounters.LG) || {};
+    const methodOrder = ["land", "water", "rock_smash", "old_rod", "good_rod", "super_rod"];
+    const methods = methodOrder.filter((m) =>
+      state.version === "BOTH"
+        ? (encFR[m] && encFR[m].length) || (encLG[m] && encLG[m].length)
+        : state.version === "FR"
+        ? encFR[m] && encFR[m].length
+        : encLG[m] && encLG[m].length
+    );
+
+    if (methods.length) {
+      for (const method of methods) {
+        if (state.version === "BOTH") {
+          const map = new Map();
+          for (const p of encFR[method] || []) {
+            map.set(p.species, { species: p.species, fr: p, lg: null });
+          }
+          for (const p of encLG[method] || []) {
+            if (map.has(p.species)) map.get(p.species).lg = p;
+            else map.set(p.species, { species: p.species, fr: null, lg: p });
+          }
+          const rows = [...map.values()].sort((a, b) => {
+            const ra = Math.max(a.fr ? a.fr.rate : 0, a.lg ? a.lg.rate : 0);
+            const rb = Math.max(b.fr ? b.fr.rate : 0, b.lg ? b.lg.rate : 0);
+            return rb - ra || a.species.localeCompare(b.species);
+          });
+          html += `
+            <div class="enc-group">
+              <div class="enc-group-title">${ENC_LABELS[method] || method}</div>
+              <table class="enc-table">
+                <thead><tr><th>Pokémon</th><th>Games</th><th>Level</th><th>Rate</th></tr></thead>
+                <tbody>
+                  ${rows.map((r) => {
+                    const mn = Math.min(r.fr ? r.fr.min : 999, r.lg ? r.lg.min : 999);
+                    const mx = Math.max(r.fr ? r.fr.max : 0, r.lg ? r.lg.max : 0);
+                    const lvl = mn === mx ? `Lv. ${mn}` : `${mn}–${mx}`;
+                    let rateStr = "";
+                    if (r.fr && r.lg) {
+                      rateStr = r.fr.rate === r.lg.rate ? `${r.fr.rate}%` : `${r.fr.rate}% / ${r.lg.rate}%`;
+                    } else if (r.fr) {
+                      rateStr = `${r.fr.rate}%`;
+                    } else {
+                      rateStr = `${r.lg.rate}%`;
+                    }
+                    return `
+                      <tr>
+                        <td>
+                          <div class="enc-species-cell">
+                            <strong>${escapeHtml(r.species)}</strong>
+                            ${renderSpeciesTypes(r.species, true)}
+                          </div>
+                        </td>
+                        <td>
+                          <span class="ver-pills">
+                            <span class="ver-pill fr ${r.fr ? "on" : "off"}">FR</span>
+                            <span class="ver-pill lg ${r.lg ? "on" : "off"}">LG</span>
+                          </span>
+                        </td>
+                        <td>${lvl}</td>
+                        <td class="enc-rate">${rateStr}</td>
+                      </tr>
+                    `;
+                  }).join("")}
+                </tbody>
+              </table>
+            </div>
+          `;
+        } else {
+          const mons = (state.version === "FR" ? encFR[method] : encLG[method]) || [];
+          html += `
+            <div class="enc-group">
+              <div class="enc-group-title">${ENC_LABELS[method] || method}</div>
+              <table class="enc-table">
+                <thead><tr><th>Pokémon</th><th>Level</th><th>Rate</th></tr></thead>
+                <tbody>
+                  ${mons.map((p) => `
+                    <tr>
+                      <td>
+                        <div class="enc-species-cell">
+                          <strong>${escapeHtml(p.species)}</strong>
+                          ${renderSpeciesTypes(p.species, true)}
+                        </div>
+                      </td>
+                      <td>Lv. ${p.min === p.max ? p.min : `${p.min}–${p.max}`}</td>
+                      <td class="enc-rate">${p.rate}%</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          `;
+        }
       }
     } else {
       html += `<div class="drawer-desc">No wild Pokémon encounters in this area.</div>`;
@@ -731,14 +801,24 @@
     for (const layer of state.data.layers) {
       for (const z of layer.zones) {
         let matchedSpecies = null;
+        let matchedVerTag = null;
         if (z.encounters) {
-          const verTable = z.encounters[state.version] || {};
-          for (const mons of Object.values(verTable)) {
-            const hit = mons.find((p) => p.species.toLowerCase().includes(query));
-            if (hit) {
-              matchedSpecies = `${hit.species} (${hit.rate}%, Lv.${hit.min}${hit.min !== hit.max ? "–" + hit.max : ""})`;
-              break;
+          const checkVers = state.version === "BOTH" ? ["FR", "LG"] : [state.version];
+          const hits = {};
+          for (const v of checkVers) {
+            const verTable = z.encounters[v] || {};
+            for (const mons of Object.values(verTable)) {
+              const hit = mons.find((p) => p.species.toLowerCase().includes(query));
+              if (hit) {
+                hits[v] = hit;
+                break;
+              }
             }
+          }
+          const h = hits.FR || hits.LG;
+          if (h) {
+            matchedSpecies = `${h.species} (${h.rate}%, Lv.${h.min}${h.min !== h.max ? "–" + h.max : ""})`;
+            matchedVerTag = hits.FR && hits.LG ? "Wild (FR/LG)" : hits.FR ? "Wild (FR)" : "Wild (LG)";
           }
         }
         if (z.name.toLowerCase().includes(query) || matchedSpecies) {
@@ -746,7 +826,7 @@
             type: "zone",
             title: matchedSpecies ? `${z.name} — Wild ${matchedSpecies}` : z.name,
             sub: layer.name,
-            tag: matchedSpecies ? `Wild (${state.version})` : "Area",
+            tag: matchedVerTag || "Area",
             layerId: layer.id,
             zone: z,
           });
@@ -830,9 +910,10 @@
       if (!e.target.closest(".search-section")) elSearchResults.classList.add("hidden");
     });
 
-    // Version toggle
+    // Version toggle (Both / FR / LG)
     const setVer = (ver) => {
       state.version = ver;
+      $("btn-ver-both").classList.toggle("active", ver === "BOTH");
       $("btn-ver-fr").classList.toggle("active", ver === "FR");
       $("btn-ver-lg").classList.toggle("active", ver === "LG");
       if (state.selectedZoneId) {
@@ -843,6 +924,7 @@
         runSearch(elSearchInput.value);
       }
     };
+    $("btn-ver-both").addEventListener("click", () => setVer("BOTH"));
     $("btn-ver-fr").addEventListener("click", () => setVer("FR"));
     $("btn-ver-lg").addEventListener("click", () => setVer("LG"));
 

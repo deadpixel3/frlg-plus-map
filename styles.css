@@ -272,6 +272,11 @@ html, body {
   transition: 0.15s;
 }
 
+.ver-btn.active.both {
+  background: linear-gradient(135deg, var(--accent-fr), var(--accent-lg));
+  color: #fff;
+}
+
 .ver-btn.active.fr {
   background: var(--accent-fr);
   color: #fff;
@@ -989,6 +994,37 @@ html, body {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
+}
+
+.ver-pills {
+  display: inline-flex;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.ver-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+  line-height: 1.1;
+}
+
+.ver-pill.fr.on {
+  background: #ea580c;
+  color: #fff;
+}
+
+.ver-pill.lg.on {
+  background: #65a30d;
+  color: #fff;
+}
+
+.ver-pill.off {
+  background: rgba(148, 163, 184, 0.12);
+  color: rgba(148, 163, 184, 0.35);
 }
 
 /* Type Chart Modal */
