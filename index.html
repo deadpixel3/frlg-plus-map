@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pokémon FRLG+ Interactive Map</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Left Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-badge">FRLG+</div>
+          <div>
+            <h1>Interactive Map</h1>
+            <p class="subtitle">
+              <a href="https://github.com/Deokishisu/FRLG-Plus" target="_blank" rel="noopener">Deokishisu/FRLG-Plus</a>
+            </p>
+          </div>
+        </div>
+        <button id="btn-collapse-sidebar" class="icon-btn" title="Collapse sidebar">✕</button>
+      </div>
+
+      <!-- Layer Switcher -->
+      <div class="panel-section">
+        <label class="section-label" for="layer-select">Map Layer</label>
+        <select id="layer-select" class="select-input"></select>
+      </div>
+
+      <!-- Global Search -->
+      <div class="panel-section search-section">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input id="search-input" type="text" placeholder="Search items, Pokémon, trainers, routes..." autocomplete="off" />
+          <button id="btn-clear-search" class="clear-btn hidden" title="Clear search">✕</button>
+        </div>
+        <div id="search-results" class="search-results hidden"></div>
+      </div>
+
+      <!-- Version Toggle (FR / LG) -->
+      <div class="panel-section version-section">
+        <span class="section-label">Encounter Version</span>
+        <div class="version-toggle" role="group" aria-label="Game Version">
+          <button id="btn-ver-fr" class="ver-btn active fr" data-ver="FR">FireRed</button>
+          <button id="btn-ver-lg" class="ver-btn lg" data-ver="LG">LeafGreen</button>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="panel-section progress-section">
+        <div class="progress-header">
+          <span class="section-label">Completion Progress</span>
+          <span id="progress-text" class="progress-count">0 / 0</span>
+        </div>
+        <div class="progress-bar-track">
+          <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+        <div class="progress-controls">
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-hide-found" />
+            <span>Hide found</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-show-labels" checked />
+            <span>Zone labels</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Category Filters -->
+      <div class="panel-section categories-section">
+        <div class="section-header-row">
+          <span class="section-label">Categories</span>
+          <div class="mini-actions">
+            <button id="btn-show-all" class="link-btn">Show All</button>
+            <span>·</span>
+            <button id="btn-hide-all" class="link-btn">Hide All</button>
+          </div>
+        </div>
+        <div id="category-list" class="category-list"></div>
+      </div>
+
+      <!-- Footer Actions -->
+      <div class="sidebar-footer">
+        <button id="btn-export-progress" class="secondary-btn" title="Export progress JSON">Export</button>
+        <button id="btn-import-progress" class="secondary-btn" title="Import progress JSON">Import</button>
+        <button id="btn-reset-progress" class="danger-btn" title="Reset all found markers">Reset</button>
+        <input id="import-file-input" type="file" accept="application/json" class="hidden" />
+      </div>
+    </aside>
+
+    <!-- Main Map Viewport -->
+    <main id="map-container">
+      <button id="btn-open-sidebar" class="floating-btn hidden" title="Open sidebar">☰ Menu</button>
+
+      <!-- Top-Center Current Zone Pill -->
+      <div id="hud-zone-pill" class="hud-pill hidden">
+        <span id="hud-zone-name">Kanto</span>
+        <span id="hud-zone-hint" class="hud-hint">Click area for Wild Encounters</span>
+      </div>
+
+      <!-- Map Canvas Stage -->
+      <div id="viewport">
+        <div id="map-stage">
+          <img id="map-image" alt="FRLG-Plus Map" draggable="false" />
+          <div id="zones-layer"></div>
+          <div id="markers-layer"></div>
+        </div>
+      </div>
+
+      <!-- Bottom-Right Zoom Controls -->
+      <div class="zoom-controls">
+        <button id="btn-zoom-in" class="zoom-btn" title="Zoom in (+)">+</button>
+        <button id="btn-zoom-out" class="zoom-btn" title="Zoom out (-)">−</button>
+        <button id="btn-zoom-fit" class="zoom-btn" title="Fit to screen">⊞</button>
+      </div>
+
+      <!-- Bottom-Left Coordinates -->
+      <div id="hud-coords" class="hud-coords">X: 0, Y: 0</div>
+
+      <!-- Floating Hover Tooltip -->
+      <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+
+      <!-- Right Detail Drawer (Marker Info or Zone Wild Encounters) -->
+      <aside id="detail-drawer" class="detail-drawer hidden">
+        <div class="drawer-header">
+          <div id="drawer-badge" class="drawer-badge"></div>
+          <button id="btn-close-drawer" class="icon-btn" title="Close">✕</button>
+        </div>
+        <div id="drawer-body" class="drawer-body"></div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="assets/data/map_data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
