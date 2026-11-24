@@ -1241,8 +1241,19 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
                 seen_story_trainers.add(tid)
                 tr = trainers_db[tid]
                 is_boss = any(k in tid for k in ("LEADER_", "ELITE_FOUR_", "CHAMPION_", "BOSS_GIOVANNI", "RIVAL_"))
-                title = f"{tr['class']} {tr['name']}".strip()
-                markers.append({
+                variant_tag = ""
+                badge = None
+                if "_CHALLENGE" in tid:
+                    variant_tag = " (Challenge Mode)"
+                    badge = "FRLG+"
+                elif "_REMATCH" in tid or (is_boss and tid.endswith("_2")):
+                    variant_tag = " (Rematch)"
+                    badge = "FRLG+" if "_REMATCH" in tid else None
+                elif "_EASY" in tid:
+                    variant_tag = " (Easy Mode)"
+                    badge = "FRLG+"
+                title = f"{tr['class']} {tr['name']}".strip() + variant_tag
+                mk = {
                     "id": f"{layer_id}:{mdata['name']}:trainer:{idx}:{t_i}" if t_i > 0 else f"{layer_id}:{mdata['name']}:trainer:{idx}",
                     "layer": layer_id,
                     "category": "gym" if is_boss else "trainer",
@@ -1252,8 +1263,17 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
                     "y": py,
                     "double": tr["double"],
                     "party": tr["party"],
-                    "details": ("Story / Boss battle." if is_boss else ("Double Battle." if tr["double"] else ("Story trainer battle." if ttype == "TRAINER_TYPE_NONE" else "Trainer battle."))),
-                })
+                    "details": (
+                        "FRLG+ Challenge Mode boss team." if "_CHALLENGE" in tid else
+                        "Post-game Rematch team." if ("_REMATCH" in tid or (is_boss and tid.endswith("_2"))) else
+                        "Story / Boss battle." if is_boss else
+                        "Double Battle." if tr["double"] else
+                        "Story trainer battle." if ttype == "TRAINER_TYPE_NONE" else "Trainer battle."
+                    ),
+                }
+                if badge:
+                    mk["badge"] = badge
+                markers.append(mk)
                 added_any = True
             if added_any:
                 continue
