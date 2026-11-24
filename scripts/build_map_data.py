@@ -613,7 +613,8 @@ def parse_wild_encounters():
 def parse_all_scripts():
     """Index script labels -> item / trainer / master_trainer / move_tutor / shop / healer info."""
     script_items = {}
-    script_trainers = {}
+    script_trainers = {}       # label -> list of TRAINER_* IDs directly in label
+    script_calls = {}          # label -> set of called/goto'd labels
     script_masters = {}
     script_tutors = {}
     script_shops = set()
@@ -633,15 +634,21 @@ def parse_all_scripts():
                 continue
             if not cur_label:
                 continue
+            # Track call / goto edges for multi-step story battles (e.g. Three Island Bikers, Rival triggers)
+            cm = re.search(r'\b(?:call|goto|call_if_\w+|goto_if_\w+)\s+(?:[^,]+,\s*)*(\w+)$', s)
+            if cm:
+                script_calls.setdefault(cur_label, set()).add(cm.group(1))
             # Item ball / giveitem
             im = re.search(r'\b(?:finditem|giveitem_msg|giveitem)\s+(ITEM_\w+)(?:\s*,\s*(\d+))?', s)
             if im and cur_label not in script_items:
                 qty = int(im.group(2)) if im.group(2) else 1
                 script_items[cur_label] = (im.group(1), qty)
-            # Regular trainer battle
+            # Regular trainer battle (collect all in order)
             tm = re.search(r'\btrainerbattle_\w+\s+(TRAINER_\w+)', s)
-            if tm and cur_label not in script_trainers:
-                script_trainers[cur_label] = tm.group(1)
+            if tm:
+                lst = script_trainers.setdefault(cur_label, [])
+                if tm.group(1) not in lst:
+                    lst.append(tm.group(1))
             # Master Trainer battle
             mm = re.search(r'\btrainerbattle_\w+\s+(MASTER_\w+)', s)
             if mm and cur_label not in script_masters:
@@ -666,9 +673,31 @@ def parse_all_scripts():
     for p in glob.glob(str(REPO / "data/maps/*/scripts.inc")):
         scan_file(Path(p))
 
+    # Resolve transitive trainer battles up to 4 hops (catches story events like Three Island Bikers & Rival triggers)
+    resolved_trainers = {}
+    for lbl in set(script_trainers.keys()) | set(script_calls.keys()):
+        found = []
+        visited = {lbl}
+        frontier = [lbl]
+        for _ in range(5):
+            next_frontier = []
+            for cur in frontier:
+                for tid in script_trainers.get(cur, []):
+                    if tid not in found:
+                        found.append(tid)
+                for nxt in script_calls.get(cur, ()):
+                    if nxt not in visited:
+                        visited.add(nxt)
+                        next_frontier.append(nxt)
+            frontier = next_frontier
+            if not frontier:
+                break
+        if found:
+            resolved_trainers[lbl] = found
+
     return {
         "items": script_items,
-        "trainers": script_trainers,
+        "trainers": resolved_trainers,
         "masters": script_masters,
         "tutors": script_tutors,
         "shops": script_shops,
@@ -960,6 +989,7 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
     sub_prefix = f"Inside {map_name}: " if is_indoor_summary else ""
 
     # 1. Object events (Items, Trainers, Master Trainers, Move Tutors, Legendaries, Shops, Healers)
+    seen_story_trainers = set()
     for idx, obj in enumerate(mdata.get("object_events", [])):
         gfx = obj.get("graphics_id", "")
         script = obj.get("script", "")
@@ -1045,15 +1075,23 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
             })
             continue
 
-        # Regular Trainers & Gym Leaders
+        # Regular Trainers, Story Trainers & Gym Leaders
         if ttype != "TRAINER_TYPE_NONE" or script in scripts["trainers"]:
-            tid = scripts["trainers"].get(script)
-            if tid and tid in trainers_db:
+            tids = scripts["trainers"].get(script, [])
+            # Filter out starter-variant duplicates if a story script triggers multiple rival variants,
+            # but keep distinct story trainers (like Three Island Biker Gang: Goon 1/2/3 + Cue Ball Paxton)
+            added_any = False
+            for t_i, tid in enumerate(tids):
+                if tid not in trainers_db:
+                    continue
+                if ttype == "TRAINER_TYPE_NONE" and tid in seen_story_trainers:
+                    continue
+                seen_story_trainers.add(tid)
                 tr = trainers_db[tid]
-                is_boss = any(k in tid for k in ("LEADER_", "ELITE_FOUR_", "CHAMPION_", "BOSS_GIOVANNI"))
+                is_boss = any(k in tid for k in ("LEADER_", "ELITE_FOUR_", "CHAMPION_", "BOSS_GIOVANNI", "RIVAL_"))
                 title = f"{tr['class']} {tr['name']}".strip()
                 markers.append({
-                    "id": f"{layer_id}:{mdata['name']}:trainer:{idx}",
+                    "id": f"{layer_id}:{mdata['name']}:trainer:{idx}:{t_i}" if t_i > 0 else f"{layer_id}:{mdata['name']}:trainer:{idx}",
                     "layer": layer_id,
                     "category": "gym" if is_boss else "trainer",
                     "title": f"{sub_prefix}{title}",
@@ -1062,8 +1100,10 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
                     "y": py,
                     "double": tr["double"],
                     "party": tr["party"],
-                    "details": ("Boss / Gym Leader battle." if is_boss else ("Double Battle." if tr["double"] else "Trainer battle.")),
+                    "details": ("Story / Boss battle." if is_boss else ("Double Battle." if tr["double"] else ("Story trainer battle." if ttype == "TRAINER_TYPE_NONE" else "Trainer battle."))),
                 })
+                added_any = True
+            if added_any:
                 continue
 
         # Shops / Poké Marts (when summarizing indoor or outdoor)
@@ -1079,6 +1119,34 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
                 "y": py,
                 "details": "Buy items and Poké Balls.",
             })
+
+    # 1b. Coord events that trigger story trainer battles (e.g. Rival encounters, Three Island Bikers)
+    if not is_indoor_summary:
+        for idx, ce in enumerate(mdata.get("coord_events", [])):
+            script = ce.get("script", "")
+            tids = scripts["trainers"].get(script, [])
+            if not tids:
+                continue
+            px, py = make_xy(ce["x"], ce["y"])
+            for t_i, tid in enumerate(tids):
+                if tid not in trainers_db or tid in seen_story_trainers:
+                    continue
+                seen_story_trainers.add(tid)
+                tr = trainers_db[tid]
+                is_boss = any(k in tid for k in ("LEADER_", "ELITE_FOUR_", "CHAMPION_", "BOSS_GIOVANNI", "RIVAL_"))
+                title = f"{tr['class']} {tr['name']}".strip()
+                markers.append({
+                    "id": f"{layer_id}:{mdata['name']}:story:{idx}:{t_i}",
+                    "layer": layer_id,
+                    "category": "gym" if is_boss else "trainer",
+                    "title": f"{title} (Story Event)",
+                    "map": map_name,
+                    "x": px,
+                    "y": py,
+                    "double": tr["double"],
+                    "party": tr["party"],
+                    "details": "Triggered story battle.",
+                })
 
     # 2. BG Events (Hidden Items)
     for idx, bg in enumerate(mdata.get("bg_events", [])):
