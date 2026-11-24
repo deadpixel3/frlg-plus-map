@@ -611,15 +611,15 @@ def parse_wild_encounters():
 
 
 def parse_all_scripts():
-    """Index script labels -> item / trainer / master_trainer / move_tutor / shop / healer info."""
-    script_items = {}
+    """Index script labels -> item / trainer / master_trainer / move_tutor / shop / healer / pokemon info."""
+    script_items = {}          # label -> list of (ITEM_*, qty)
     script_trainers = {}       # label -> list of TRAINER_* IDs directly in label
     script_calls = {}          # label -> set of called/goto'd labels
     script_masters = {}
     script_tutors = {}
     script_shops = set()
     script_healers = set()
-    script_legendaries = {}
+    script_legendaries = {}    # label -> (species, level, is_gift)
 
     def scan_file(path):
         txt = path.read_text(errors="ignore")
@@ -634,15 +634,18 @@ def parse_all_scripts():
                 continue
             if not cur_label:
                 continue
-            # Track call / goto edges for multi-step story battles (e.g. Three Island Bikers, Rival triggers)
+            # Track call / goto edges for multi-step scripts
             cm = re.search(r'\b(?:call|goto|call_if_\w+|goto_if_\w+)\s+(?:[^,]+,\s*)*(\w+)$', s)
             if cm:
                 script_calls.setdefault(cur_label, set()).add(cm.group(1))
-            # Item ball / giveitem
-            im = re.search(r'\b(?:finditem|giveitem_msg|giveitem)\s+(ITEM_\w+)(?:\s*,\s*(\d+))?', s)
-            if im and cur_label not in script_items:
+            # Item ball / giveitem / additem
+            im = re.search(r'\b(?:finditem|giveitem_msg|giveitem|additem)\s+(ITEM_\w+)(?:\s*,\s*(\d+))?', s)
+            if im:
                 qty = int(im.group(2)) if im.group(2) else 1
-                script_items[cur_label] = (im.group(1), qty)
+                pair = (im.group(1), qty)
+                lst = script_items.setdefault(cur_label, [])
+                if all(x[0] != pair[0] for x in lst):
+                    lst.append(pair)
             # Regular trainer battle (collect all in order)
             tm = re.search(r'\btrainerbattle_\w+\s+(TRAINER_\w+)', s)
             if tm:
@@ -663,46 +666,77 @@ def parse_all_scripts():
             # Healer
             if re.search(r'\b(?:special\s+HealPlayerParty|call\s+EventScript_PkmnCenterNurse)\b', s):
                 script_healers.add(cur_label)
-            # Static / Legendary wild battle
+            # Static / Legendary wild battle or gift Pokémon
             wm = re.search(r'\bsetwildbattle\s+(SPECIES_\w+)\s*,\s*(\d+)', s)
             if wm and cur_label not in script_legendaries:
-                script_legendaries[cur_label] = (title_from_const(wm.group(1), "SPECIES_"), int(wm.group(2)))
+                script_legendaries[cur_label] = (title_from_const(wm.group(1), "SPECIES_"), int(wm.group(2)), False)
+            gm = re.search(r'\bgivemon\s+(SPECIES_\w+)\s*,\s*(\d+)', s)
+            if gm and cur_label not in script_legendaries:
+                script_legendaries[cur_label] = (title_from_const(gm.group(1), "SPECIES_"), int(gm.group(2)), True)
 
     for p in glob.glob(str(REPO / "data/scripts/*.inc")):
         scan_file(Path(p))
     for p in glob.glob(str(REPO / "data/maps/*/scripts.inc")):
         scan_file(Path(p))
 
-    # Resolve transitive trainer battles up to 4 hops (catches story events like Three Island Bikers & Rival triggers)
-    resolved_trainers = {}
-    for lbl in set(script_trainers.keys()) | set(script_calls.keys()):
-        found = []
+    def resolve_chain(lbl, max_hops=5):
         visited = {lbl}
+        order = [lbl]
         frontier = [lbl]
-        for _ in range(5):
-            next_frontier = []
+        for _ in range(max_hops):
+            nxt_f = []
             for cur in frontier:
-                for tid in script_trainers.get(cur, []):
-                    if tid not in found:
-                        found.append(tid)
                 for nxt in script_calls.get(cur, ()):
                     if nxt not in visited:
                         visited.add(nxt)
-                        next_frontier.append(nxt)
-            frontier = next_frontier
+                        order.append(nxt)
+                        nxt_f.append(nxt)
+            frontier = nxt_f
             if not frontier:
                 break
-        if found:
-            resolved_trainers[lbl] = found
+        return order
+
+    all_labels = (
+        set(script_trainers.keys())
+        | set(script_items.keys())
+        | set(script_tutors.keys())
+        | set(script_legendaries.keys())
+        | set(script_calls.keys())
+    )
+
+    resolved_trainers = {}
+    resolved_items = {}
+    resolved_tutors = {}
+    resolved_legendaries = {}
+
+    for lbl in all_labels:
+        chain = resolve_chain(lbl)
+        t_list = []
+        i_list = []
+        for cur in chain:
+            for tid in script_trainers.get(cur, []):
+                if tid not in t_list:
+                    t_list.append(tid)
+            for ipair in script_items.get(cur, []):
+                if all(x[0] != ipair[0] for x in i_list):
+                    i_list.append(ipair)
+            if lbl not in resolved_tutors and cur in script_tutors:
+                resolved_tutors[lbl] = script_tutors[cur]
+            if lbl not in resolved_legendaries and cur in script_legendaries:
+                resolved_legendaries[lbl] = script_legendaries[cur]
+        if t_list:
+            resolved_trainers[lbl] = t_list
+        if i_list:
+            resolved_items[lbl] = i_list
 
     return {
-        "items": script_items,
+        "items": resolved_items,
         "trainers": resolved_trainers,
         "masters": script_masters,
-        "tutors": script_tutors,
+        "tutors": resolved_tutors,
         "shops": script_shops,
         "healers": script_healers,
-        "legendaries": script_legendaries,
+        "legendaries": resolved_legendaries,
     }
 
 
@@ -899,37 +933,106 @@ def read_png_palette(path):
     return [(0, 0, 0)] * 16
 
 
-def load_hm_sprites():
-    """Load 16x16 first-frame sprites (with index 0 transparent) for Cut trees, boulders, and smash rocks."""
-    misc = REPO / "graphics/object_events/pics/misc"
-    mapping = {
-        "OBJ_EVENT_GFX_CUT_TREE": misc / "cut_tree.png",
-        "OBJ_EVENT_GFX_PUSHABLE_BOULDER": misc / "strength_boulder.png",
-        "OBJ_EVENT_GFX_ROCK_SMASH_ROCK": misc / "rock_smash_rock.png",
-    }
+def load_all_object_sprites():
+    """Parse FRLG-Plus object_event tables and load every overworld sprite (NPCs, trainers, Pokémon, items, HM obstacles)."""
+    oe_dir = REPO / "src/data/object_events"
+    ptrs_txt = (oe_dir / "object_event_graphics_info_pointers.h").read_text(errors="ignore")
+    info_txt = (oe_dir / "object_event_graphics_info.h").read_text(errors="ignore")
+    pics_txt = (oe_dir / "object_event_pic_tables.h").read_text(errors="ignore")
+    gfx_txt = (oe_dir / "object_event_graphics.h").read_text(errors="ignore")
+
+    # 1. gObjectEventPic_* -> .png path
+    pic_paths = {}
+    for m in re.finditer(r'(gObjectEventPic_\w+)\[\]\s*=\s*INCBIN_\w+\("([^"]+)"\)', gfx_txt):
+        p = re.sub(r'\.4bpp(\.lz)?$', '.png', m.group(2))
+        pic_paths[m.group(1)] = REPO / p
+
+    # 2. sPicTable_* -> first gObjectEventPic_*
+    table_to_pic = {}
+    for m in re.finditer(r'static const struct SpriteFrameImage (sPicTable_\w+)\[\]\s*=\s*\{([^}]+)\};', pics_txt, re.S):
+        pm = re.search(r'(gObjectEventPic_\w+)', m.group(2))
+        if pm:
+            table_to_pic[m.group(1)] = pm.group(1)
+
+    # 3. gObjectEventGraphicsInfo_* -> (w, h, pic_sym)
+    info_map = {}
+    for m in re.finditer(r'const struct ObjectEventGraphicsInfo (gObjectEventGraphicsInfo_\w+)\s*=\s*\{([^}]+)\};', info_txt, re.S):
+        body = m.group(2)
+        wm = re.search(r'\.width\s*=\s*(\d+)', body)
+        hm = re.search(r'\.height\s*=\s*(\d+)', body)
+        im = re.search(r'\.images\s*=\s*(sPicTable_\w+)', body)
+        if wm and hm and im:
+            info_map[m.group(1)] = (int(wm.group(1)), int(hm.group(1)), table_to_pic.get(im.group(1)))
+
+    # 4. OBJ_EVENT_GFX_* -> gObjectEventGraphicsInfo_*
+    gfx_to_info = {}
+    for m in re.finditer(r'\[(OBJ_EVENT_GFX_\w+)\]\s*=\s*&(gObjectEventGraphicsInfo_\w+)', ptrs_txt):
+        gfx_to_info[m.group(1)] = m.group(2)
+
+    # Cache decoded PNGs by path
+    png_cache = {}
     sprites = {}
-    for gfx_id, path in mapping.items():
-        if not path.exists():
+    for gfx_id, info_sym in gfx_to_info.items():
+        if info_sym not in info_map:
             continue
-        w, h, px = read_indexed_png(path)
-        pal = read_png_palette(path)
-        # Extract first 16x16 frame as list of (dx, dy, r, g, b) for non-transparent pixels
-        pixels = []
-        for dy in range(min(16, h)):
-            for dx in range(min(16, w)):
-                cidx = px[dy * w + dx]
-                if cidx != 0 and cidx < len(pal):
-                    r, g, b = pal[cidx]
-                    pixels.append((dx, dy, r, g, b))
-        sprites[gfx_id] = pixels
+        fw, fh, pic_sym = info_map[info_sym]
+        path = pic_paths.get(pic_sym)
+        if not path or not path.exists():
+            continue
+        if path not in png_cache:
+            try:
+                w, h, px = read_indexed_png(path)
+                pal = read_png_palette(path)
+                png_cache[path] = (w, h, px, pal)
+            except Exception:
+                png_cache[path] = None
+        decoded = png_cache[path]
+        if not decoded:
+            continue
+        w, h, px, pal = decoded
+        num_frames = max(1, w // fw)
+        # Pre-extract frames 0 (down), 1 (up), 2 (left) if available
+        frames = {}
+        for fidx in (0, 1, 2):
+            if fidx >= num_frames:
+                continue
+            ox = fidx * fw
+            pts = []
+            for dy in range(min(fh, h)):
+                row_off = dy * w + ox
+                for dx in range(min(fw, w - ox)):
+                    cidx = px[row_off + dx]
+                    if cidx != 0 and cidx < len(pal):
+                        r, g, b = pal[cidx]
+                        pts.append((dx, dy, r, g, b))
+            frames[fidx] = pts
+        sprites[gfx_id] = (fw, fh, frames)
     return sprites
 
 
-def blit_sprite_into_canvas(canvas, canvas_w_px, canvas_h_px, x_px, y_px, sprite_pixels):
+def blit_object_sprite(canvas, canvas_w_px, canvas_h_px, tile_x_px, tile_y_px, sprite_entry, movement_type=""):
+    fw, fh, frames = sprite_entry
+    # Pick facing direction frame for standard 3-frame people/Pokémon sheets
+    fidx = 0
+    flip_x = False
+    if len(frames) >= 3:
+        if "FACE_UP" in movement_type or "LOOK_UP" in movement_type:
+            fidx = 1
+        elif "FACE_LEFT" in movement_type:
+            fidx = 2
+        elif "FACE_RIGHT" in movement_type:
+            fidx = 2
+            flip_x = True
+    pts = frames.get(fidx) or frames.get(0)
+    if not pts:
+        return
+    # Anchor bottom-center of sprite onto bottom-center of 16x16 metatile
+    x0 = tile_x_px + (16 - fw) // 2
+    y0 = tile_y_px + (16 - fh)
     stride = canvas_w_px * 3
-    for dx, dy, r, g, b in sprite_pixels:
-        px = x_px + dx
-        py = y_px + dy
+    for dx, dy, r, g, b in pts:
+        px = x0 + ((fw - 1 - dx) if flip_x else dx)
+        py = y0 + dy
         if 0 <= px < canvas_w_px and 0 <= py < canvas_h_px:
             off = py * stride + px * 3
             canvas[off] = r
@@ -937,7 +1040,7 @@ def blit_sprite_into_canvas(canvas, canvas_w_px, canvas_h_px, x_px, y_px, sprite
             canvas[off + 2] = b
 
 
-def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, hm_sprites=None, framed_maps=None, bg_rgb=(15, 23, 42)):
+def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, obj_sprites=None, framed_maps=None, bg_rgb=(15, 23, 42)):
     """Render all maps in map_positions onto one PNG and return (width_px, height_px)."""
     pad = 3
     max_x = max(x + layouts[maps_by_id[m]["layout"]]["width"] for m, (x, y) in map_positions.items()) + pad
@@ -949,13 +1052,17 @@ def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, hm_spri
         mdata = maps_by_id[mid]
         layout = layouts[mdata["layout"]]
         blit_map_into_canvas(canvas, w_px, mx, my, layout, ts_cache)
-        if hm_sprites:
-            for obj in mdata.get("object_events", []):
-                sp = hm_sprites.get(obj.get("graphics_id", ""))
+        if obj_sprites:
+            # Depth-sort by y so southern sprites overlap northern ones cleanly
+            objs = sorted(mdata.get("object_events", []), key=lambda o: (o.get("y", 0), o.get("x", 0)))
+            for obj in objs:
+                gfx = obj.get("graphics_id", "")
+                sp = obj_sprites.get(gfx)
                 if sp:
-                    blit_sprite_into_canvas(
+                    blit_object_sprite(
                         canvas, w_px, h_px,
-                        (mx + obj["x"]) * 16, (my + obj["y"]) * 16, sp
+                        (mx + obj["x"]) * 16, (my + obj["y"]) * 16,
+                        sp, obj.get("movement_type", "")
                     )
         if framed_maps and mid in framed_maps:
             draw_rect_border(
@@ -1021,25 +1128,28 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
             })
             continue
 
-        # Visible Item Ball / TM
+        # Visible Item Ball / TM / NPC Gift Item
         if gfx == "OBJ_EVENT_GFX_ITEM_BALL" or script in scripts["items"]:
-            item_info = scripts["items"].get(script)
-            if item_info:
-                iid, qty = item_info
-                idb = items_db.get(iid, {"name": title_from_const(iid, "ITEM_"), "description": ""})
-                is_tm = iid.startswith("ITEM_TM") or iid.startswith("ITEM_HM")
-                qty_str = f" ×{qty}" if qty > 1 else ""
-                markers.append({
-                    "id": f"{layer_id}:{mdata['name']}:item:{idx}",
-                    "layer": layer_id,
-                    "category": "tm" if is_tm else "item",
-                    "title": f"{sub_prefix}{idb['name']}{qty_str}",
-                    "map": map_name,
-                    "x": px,
-                    "y": py,
-                    "details": idb.get("description", ""),
-                })
-                continue
+            item_list = scripts["items"].get(script, [])
+            if item_list:
+                for it_i, (iid, qty) in enumerate(item_list):
+                    idb = items_db.get(iid, {"name": title_from_const(iid, "ITEM_"), "description": ""})
+                    is_tm = iid.startswith("ITEM_TM") or iid.startswith("ITEM_HM")
+                    is_gift = gfx != "OBJ_EVENT_GFX_ITEM_BALL"
+                    qty_str = f" ×{qty}" if qty > 1 else ""
+                    gift_prefix = "NPC Gift: " if is_gift else ""
+                    markers.append({
+                        "id": f"{layer_id}:{mdata['name']}:item:{idx}:{it_i}" if it_i > 0 else f"{layer_id}:{mdata['name']}:item:{idx}",
+                        "layer": layer_id,
+                        "category": "tm" if is_tm else "item",
+                        "title": f"{sub_prefix}{gift_prefix}{idb['name']}{qty_str}",
+                        "map": map_name,
+                        "x": px,
+                        "y": py,
+                        "details": idb.get("description", ""),
+                    })
+                if gfx == "OBJ_EVENT_GFX_ITEM_BALL":
+                    continue
 
         # Move Tutors
         if script in scripts["tutors"] or "Tutor" in script:
@@ -1060,18 +1170,18 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
             })
             continue
 
-        # Static / Legendary Pokémon
+        # Static / Legendary / Gift Pokémon
         if script in scripts["legendaries"]:
-            sp, lv = scripts["legendaries"][script]
+            sp, lv, is_gift = scripts["legendaries"][script]
             markers.append({
                 "id": f"{layer_id}:{mdata['name']}:legend:{idx}",
                 "layer": layer_id,
                 "category": "pokemon",
-                "title": f"{sub_prefix}{sp} (Lv. {lv})",
+                "title": f"{sub_prefix}{'Gift: ' if is_gift else ''}{sp} (Lv. {lv})",
                 "map": map_name,
                 "x": px,
                 "y": py,
-                "details": f"Static wild encounter: Lv. {lv} {sp}.",
+                "details": f"{'Gift Pokémon' if is_gift else 'Static wild encounter'}: Lv. {lv} {sp}.",
             })
             continue
 
@@ -1260,7 +1370,8 @@ def main():
 
     ts_defs = parse_tileset_definitions()
     ts_cache = TilesetCache(ts_defs)
-    hm_sprites = load_hm_sprites()
+    obj_sprites = load_all_object_sprites()
+    print(f"   Loaded {len(obj_sprites)} overworld object sprites.")
 
     items_db = parse_items()
     species_types = parse_species_types()
@@ -1456,7 +1567,7 @@ def main():
     print(f"2. Rendering {len(all_layers_def)} unified map layers to PNG and extracting markers...")
     for lid, label, group, pos, framed_set in all_layers_def:
         t_layer = time.time()
-        w_px, h_px = render_layer(lid, pos, maps_by_id, layouts, ts_cache, hm_sprites=hm_sprites, framed_maps=framed_set)
+        w_px, h_px = render_layer(lid, pos, maps_by_id, layouts, ts_cache, obj_sprites=obj_sprites, framed_maps=framed_set)
 
         zones = []
         layer_markers = []
