@@ -24,6 +24,103 @@
     super_rod: "🎣 Super Rod",
   };
 
+  const TYPE_COLORS = {
+    Normal:   "#9ca3af",
+    Fire:     "#ef4444",
+    Water:    "#3b82f6",
+    Electric: "#eab308",
+    Grass:    "#22c55e",
+    Ice:      "#38bdf8",
+    Fighting: "#b91c1c",
+    Poison:   "#a855f7",
+    Ground:   "#ca8a04",
+    Flying:   "#818cf8",
+    Psychic:  "#ec4899",
+    Bug:      "#84cc16",
+    Rock:     "#a16207",
+    Ghost:    "#6366f1",
+    Dragon:   "#4f46e5",
+    Dark:     "#475569",
+    Steel:    "#64748b",
+  };
+
+  // Gen 3 attacking type effectiveness: GEN3_CHART[atk][def] = multiplier (omit 1)
+  const GEN3_CHART = {
+    Normal:   { Rock: 0.5, Ghost: 0, Steel: 0.5 },
+    Fire:     { Fire: 0.5, Water: 0.5, Grass: 2, Ice: 2, Bug: 2, Rock: 0.5, Dragon: 0.5, Steel: 2 },
+    Water:    { Fire: 2, Water: 0.5, Grass: 0.5, Ground: 2, Rock: 2, Dragon: 0.5 },
+    Electric: { Water: 2, Electric: 0.5, Grass: 0.5, Ground: 0, Flying: 2, Dragon: 0.5 },
+    Grass:    { Fire: 0.5, Water: 2, Grass: 0.5, Poison: 0.5, Ground: 2, Flying: 0.5, Bug: 0.5, Rock: 2, Dragon: 0.5, Steel: 0.5 },
+    Ice:      { Fire: 0.5, Water: 0.5, Grass: 2, Ice: 0.5, Ground: 2, Flying: 2, Dragon: 2, Steel: 0.5 },
+    Fighting: { Normal: 2, Ice: 2, Poison: 0.5, Flying: 0.5, Psychic: 0.5, Bug: 0.5, Rock: 2, Ghost: 0, Dark: 2, Steel: 2 },
+    Poison:   { Grass: 2, Poison: 0.5, Ground: 0.5, Rock: 0.5, Ghost: 0.5, Steel: 0 },
+    Ground:   { Fire: 2, Electric: 2, Grass: 0.5, Poison: 2, Flying: 0, Bug: 0.5, Rock: 2, Steel: 2 },
+    Flying:   { Electric: 0.5, Grass: 2, Fighting: 2, Bug: 2, Rock: 0.5, Steel: 0.5 },
+    Psychic:  { Fighting: 2, Poison: 2, Psychic: 0.5, Dark: 0, Steel: 0.5 },
+    Bug:      { Fire: 0.5, Grass: 2, Fighting: 0.5, Poison: 0.5, Flying: 0.5, Psychic: 2, Ghost: 0.5, Dark: 2, Steel: 0.5 },
+    Rock:     { Fire: 2, Ice: 2, Fighting: 0.5, Ground: 0.5, Flying: 2, Bug: 2, Steel: 0.5 },
+    Ghost:    { Normal: 0, Psychic: 2, Ghost: 2, Dark: 0.5, Steel: 0.5 },
+    Dragon:   { Dragon: 2, Steel: 0.5 },
+    Dark:     { Fighting: 0.5, Psychic: 2, Ghost: 2, Dark: 0.5, Steel: 0.5 },
+    Steel:    { Fire: 0.5, Water: 0.5, Electric: 0.5, Ice: 2, Rock: 2, Steel: 0.5 },
+  };
+
+  function getSpeciesTypes(species) {
+    if (!state.data || !state.data.speciesTypes) return [];
+    return state.data.speciesTypes[species] || [];
+  }
+
+  function renderTypeBadge(type, small = false) {
+    const bg = TYPE_COLORS[type] || "#475569";
+    return `<span class="type-badge${small ? " sm" : ""}" style="background:${bg}">${escapeHtml(type)}</span>`;
+  }
+
+  function renderSpeciesTypes(species, small = false) {
+    const types = getSpeciesTypes(species);
+    return types.map((t) => renderTypeBadge(t, small)).join("");
+  }
+
+  function getDefensiveMatchups(types) {
+    const buckets = { w4: [], w2: [], r2: [], r4: [], im: [] };
+    if (!types || !types.length) return buckets;
+    for (const atk of Object.keys(GEN3_CHART)) {
+      let mult = 1;
+      for (const def of types) {
+        const m = GEN3_CHART[atk][def];
+        if (m !== undefined) mult *= m;
+      }
+      if (mult === 0) buckets.im.push(atk);
+      else if (mult >= 4) buckets.w4.push(atk);
+      else if (mult >= 2) buckets.w2.push(atk);
+      else if (mult <= 0.25) buckets.r4.push(atk);
+      else if (mult < 1) buckets.r2.push(atk);
+    }
+    return buckets;
+  }
+
+  function renderMatchupPanel(species) {
+    const types = getSpeciesTypes(species);
+    if (!types.length) return "";
+    const m = getDefensiveMatchups(types);
+    const rows = [
+      { key: "w4", label: "4× Weak", list: m.w4 },
+      { key: "w2", label: "2× Weak", list: m.w2 },
+      { key: "r2", label: "½× Resist", list: m.r2 },
+      { key: "r4", label: "¼× Resist", list: m.r4 },
+      { key: "im", label: "0× Immune", list: m.im },
+    ].filter((r) => r.list.length);
+
+    return rows
+      .map(
+        (r) => `
+        <div class="matchup-row">
+          <span class="matchup-label ${r.key}">${r.label}</span>
+          <div class="matchup-types">${r.list.map((t) => renderTypeBadge(t, true)).join("")}</div>
+        </div>`
+      )
+      .join("");
+  }
+
   const state = {
     data: null,
     layerId: "kanto",
@@ -396,23 +493,42 @@
     if (Array.isArray(m.party) && m.party.length) {
       html += `<span class="section-label">Team (${m.party.length} Pokémon${m.double ? " · Double Battle" : ""})</span>`;
       html += `<div class="party-list">`;
-      for (const mon of m.party) {
+      m.party.forEach((mon, idx) => {
+        const typeBadges = renderSpeciesTypes(mon.species, true);
+        const matchupHtml = renderMatchupPanel(mon.species);
         html += `
           <div class="mon-card">
             <div class="mon-top">
-              <span>${escapeHtml(mon.species)}</span>
-              <span class="mon-lvl">Lv. ${mon.level}</span>
+              <div class="mon-identity">
+                <span>${escapeHtml(mon.species)}</span>
+                ${typeBadges}
+              </div>
+              <div class="mon-right">
+                <span class="mon-lvl">Lv. ${mon.level}</span>
+                ${matchupHtml ? `<button class="mon-expand-btn" data-mon-idx="${idx}" title="Show type weaknesses & resistances">▾</button>` : ""}
+              </div>
             </div>
             ${mon.item ? `<div class="mon-item">Held Item: ${escapeHtml(mon.item)}</div>` : ""}
             ${mon.moves && mon.moves.length ? `<div class="mon-moves">${mon.moves.map((mv) => `<span class="move-chip">${escapeHtml(mv)}</span>`).join("")}</div>` : ""}
+            ${matchupHtml ? `<div class="matchup-panel hidden" id="matchup-${idx}">${matchupHtml}</div>` : ""}
           </div>
         `;
-      }
+      });
       html += `</div>`;
     }
 
     elDrawerBody.innerHTML = html;
     elDrawer.classList.remove("hidden");
+
+    elDrawerBody.querySelectorAll(".mon-expand-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const panel = $("matchup-" + btn.dataset.monIdx);
+        if (!panel) return;
+        const isOpen = !panel.classList.toggle("hidden");
+        btn.classList.toggle("open", isOpen);
+        btn.textContent = isOpen ? "▴" : "▾";
+      });
+    });
 
     const btnFound = $("btn-toggle-found");
     if (btnFound) {
@@ -466,7 +582,12 @@
               <tbody>
                 ${mons.map((p) => `
                   <tr>
-                    <td><strong>${escapeHtml(p.species)}</strong></td>
+                    <td>
+                      <div class="enc-species-cell">
+                        <strong>${escapeHtml(p.species)}</strong>
+                        ${renderSpeciesTypes(p.species, true)}
+                      </div>
+                    </td>
                     <td>Lv. ${p.min === p.max ? p.min : `${p.min}–${p.max}`}</td>
                     <td class="enc-rate">${p.rate}%</td>
                   </tr>
@@ -681,8 +802,16 @@
       $("btn-open-sidebar").classList.add("hidden");
     });
 
-    // Drawer close
+    // Drawer close & Type Chart modal
     $("btn-close-drawer").addEventListener("click", closeDrawer);
+
+    const elTypeModal = $("typechart-modal");
+    const closeTypeModal = () => elTypeModal.classList.add("hidden");
+    $("btn-open-typechart").addEventListener("click", () => elTypeModal.classList.remove("hidden"));
+    $("btn-close-typechart").addEventListener("click", closeTypeModal);
+    elTypeModal.addEventListener("click", (e) => {
+      if (e.target === elTypeModal) closeTypeModal();
+    });
 
     // Export / Import / Reset
     $("btn-export-progress").addEventListener("click", () => {
@@ -777,7 +906,10 @@
     $("btn-zoom-fit").addEventListener("click", fitToScreen);
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeDrawer();
+      if (e.key === "Escape") {
+        if (!elTypeModal.classList.contains("hidden")) closeTypeModal();
+        else closeDrawer();
+      }
     });
   }
 

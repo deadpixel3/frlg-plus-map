@@ -84,6 +84,7 @@
 
       <!-- Footer Actions -->
       <div class="sidebar-footer">
+        <button id="btn-open-typechart" class="typechart-btn" title="Open Pokémon Type Chart">📊 Type Chart</button>
         <button id="btn-export-progress" class="secondary-btn" title="Export progress JSON">Export</button>
         <button id="btn-import-progress" class="secondary-btn" title="Import progress JSON">Import</button>
         <button id="btn-reset-progress" class="danger-btn" title="Reset all found markers">Reset</button>
@@ -132,6 +133,22 @@
         <div id="drawer-body" class="drawer-body"></div>
       </aside>
     </main>
+  </div>
+
+  <!-- Type Chart Modal -->
+  <div id="typechart-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="Pokémon Type Chart">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">📊 Pokémon Type Chart</div>
+        <div class="modal-actions">
+          <a href="https://img.pokemondb.net/images/typechart.png" target="_blank" rel="noopener" class="modal-link">Open image ↗</a>
+          <button id="btn-close-typechart" class="icon-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <img src="https://img.pokemondb.net/images/typechart.png" alt="Pokémon Type Chart" class="typechart-img" />
+      </div>
+    </div>
   </div>
 
   <script src="assets/data/map_data.js"></script>

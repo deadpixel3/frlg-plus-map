@@ -438,6 +438,27 @@ def parse_items():
     return items
 
 
+def parse_species_types():
+    """Parse src/data/pokemon/species_info.h -> { 'Pidgeot': ['Normal', 'Flying'], ... }."""
+    path = REPO / "src/data/pokemon/species_info.h"
+    if not path.exists():
+        return {}
+    txt = path.read_text(errors="ignore")
+    species_types = {}
+    for m in re.finditer(r'\[(SPECIES_\w+)\]\s*=\s*\{(.*?)\n    \},', txt, re.S):
+        sp_const, body = m.group(1), m.group(2)
+        if sp_const in ("SPECIES_NONE", "SPECIES_EGG"):
+            continue
+        tm = re.search(r'\.types\s*=\s*\{\s*(TYPE_\w+)\s*,\s*(TYPE_\w+)\s*\}', body)
+        if not tm:
+            continue
+        t1 = title_from_const(tm.group(1), "TYPE_")
+        t2 = title_from_const(tm.group(2), "TYPE_")
+        types = [t1] if t1 == t2 else [t1, t2]
+        species_types[title_from_const(sp_const, "SPECIES_")] = types
+    return species_types
+
+
 def parse_party_file(path):
     """Parse trainer_parties.h or master_trainer_parties.h into dict(party_sym -> list of mon dicts)."""
     txt = path.read_text(errors="ignore")
@@ -1017,6 +1038,7 @@ def main():
     ts_cache = TilesetCache(ts_defs)
 
     items_db = parse_items()
+    species_types = parse_species_types()
     reg_parties = parse_party_file(REPO / "src/data/trainer_parties.h")
     master_parties = parse_party_file(REPO / "src/data/master_trainer_parties.h")
     trainers_db = parse_trainers_file(REPO / "src/data/trainers.h", reg_parties)
@@ -1215,6 +1237,7 @@ def main():
             "totalLayers": len(layers_meta),
             "totalMarkers": len(all_markers),
         },
+        "speciesTypes": species_types,
         "layers": layers_meta,
         "markers": all_markers,
     }
