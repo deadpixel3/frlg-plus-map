@@ -620,6 +620,18 @@ def parse_all_scripts():
     script_shops = set()
     script_healers = set()
     script_legendaries = {}    # label -> (species, level, is_gift)
+    script_services = {}       # label -> (title, sub, details)
+
+    SERVICE_LABEL_RULES = [
+        ("MoveDeleter", "Move Deleter", "Service NPC", "Forgets any move, including HM moves."),
+        ("MoveManiac", "Move Reminder (Move Maniac)", "Service NPC", "Re-teaches level-up moves in exchange for Tiny/Big Mushrooms."),
+        ("NameRater", "Name Rater", "Service NPC", "Rates and changes Pokémon nicknames."),
+        ("FossilScientist", "Fossil Reviver", "Service NPC", "Revives Helix Fossil, Dome Fossil, and Old Amber into Pokémon."),
+        ("BikeShop_EventScript_Clerk", "Bike Shop", "Service NPC", "Exchange Bike Voucher for a Bicycle."),
+        ("DaycareWoman", "Pokémon Day Care", "Service NPC", "Leave Pokémon to gain levels (and breed eggs on Four Island)."),
+        ("GlassWorker", "Glass Workshop (FRLG+)", "Service NPC", "Crafts flutes and items from volcanic ash collected with the Soot Sack."),
+        ("TwoIsland_CapeBrink_House_EventScript_StarterTutor", "Ultimate Move Tutor (Frenzy Plant / Blast Burn / Hydro Cannon)", "Move Tutor", "Teaches Frenzy Plant, Blast Burn, or Hydro Cannon to fully evolved Kanto starters."),
+    ]
 
     def scan_file(path):
         txt = path.read_text(errors="ignore")
@@ -631,6 +643,10 @@ def parse_all_scripts():
             lm = re.match(r'^(\w+)::?$', s)
             if lm:
                 cur_label = lm.group(1)
+                for pat, stitle, ssub, sdesc in SERVICE_LABEL_RULES:
+                    if pat in cur_label and cur_label not in script_services:
+                        script_services[cur_label] = (stitle, ssub, sdesc)
+                        break
                 continue
             if not cur_label:
                 continue
@@ -673,6 +689,11 @@ def parse_all_scripts():
             gm = re.search(r'\bgivemon\s+(SPECIES_\w+)\s*,\s*(\d+)', s)
             if gm and cur_label not in script_legendaries:
                 script_legendaries[cur_label] = (title_from_const(gm.group(1), "SPECIES_"), int(gm.group(2)), True)
+            # Special service commands (In-Game Trades, Daisy Grooming)
+            if "DoInGameTradeScene" in s and cur_label not in script_services:
+                script_services[cur_label] = ("In-Game Pokémon Trade", "In-Game Trade", "NPC offering an in-game Pokémon trade.")
+            if "DaisyMassageServices" in s and cur_label not in script_services:
+                script_services[cur_label] = ("Daisy's Grooming (Friendship)", "Service NPC", "Grooms your Pokémon to raise Friendship.")
 
     for p in glob.glob(str(REPO / "data/scripts/*.inc")):
         scan_file(Path(p))
@@ -701,6 +722,7 @@ def parse_all_scripts():
         | set(script_items.keys())
         | set(script_tutors.keys())
         | set(script_legendaries.keys())
+        | set(script_services.keys())
         | set(script_calls.keys())
     )
 
@@ -708,6 +730,7 @@ def parse_all_scripts():
     resolved_items = {}
     resolved_tutors = {}
     resolved_legendaries = {}
+    resolved_services = {}
 
     for lbl in all_labels:
         chain = resolve_chain(lbl)
@@ -724,6 +747,8 @@ def parse_all_scripts():
                 resolved_tutors[lbl] = script_tutors[cur]
             if lbl not in resolved_legendaries and cur in script_legendaries:
                 resolved_legendaries[lbl] = script_legendaries[cur]
+            if lbl not in resolved_services and cur in script_services:
+                resolved_services[lbl] = script_services[cur]
         if t_list:
             resolved_trainers[lbl] = t_list
         if i_list:
@@ -737,6 +762,7 @@ def parse_all_scripts():
         "shops": script_shops,
         "healers": script_healers,
         "legendaries": resolved_legendaries,
+        "services": resolved_services,
     }
 
 
@@ -1150,6 +1176,22 @@ def extract_markers_for_map(mdata, ox_mt, oy_mt, layer_id, game_data, dungeon_lo
                     })
                 if gfx == "OBJ_EVENT_GFX_ITEM_BALL":
                     continue
+
+        # Key Service NPCs (Move Deleter, Move Reminder, Name Rater, Fossil Reviver, Day Care, Bike Shop, Trades, Groomer)
+        if script in scripts.get("services", {}):
+            stitle, ssub, sdesc = scripts["services"][script]
+            markers.append({
+                "id": f"{layer_id}:{mdata['name']}:service:{idx}",
+                "layer": layer_id,
+                "category": "npc",
+                "sub": ssub,
+                "title": f"{sub_prefix}{stitle}",
+                "map": map_name,
+                "x": px,
+                "y": py,
+                "details": sdesc,
+            })
+            continue
 
         # Move Tutors
         if script in scripts["tutors"] or "Tutor" in script:
@@ -1613,9 +1655,9 @@ def main():
                             imdata, 0, 0, lid, game_data, dungeon_lookup,
                             is_indoor_summary=True, entrance_xy=(ex, ey), parent_name=mname
                         )
-                        # Only attach high-value indoor markers (Master Trainers, TMs, Items, Hidden Items, Move Tutors, Gym Leaders, Legendaries)
+                        # Only attach high-value indoor markers (Master Trainers, TMs, Items, Hidden Items, Move Tutors, Service NPCs, Trades, Gym Leaders, Legendaries)
                         for mk in imarkers:
-                            if mk["category"] in ("master_trainer", "tm", "item", "hidden_item", "gym", "pokemon") or mk.get("sub") == "Move Tutor":
+                            if mk["category"] in ("master_trainer", "tm", "item", "hidden_item", "gym", "pokemon") or mk.get("sub") in ("Move Tutor", "Service NPC", "In-Game Trade"):
                                 layer_markers.append(mk)
                         # Follow indoor stairs/elevators within same building prefix
                         bprefix = imdata["name"].split("_")[0]
