@@ -1443,8 +1443,18 @@ def main():
     )
     kanto_overworld_ids = set(kanto_pos.keys())
 
-    # Kanto dungeons: (id, label, anchor_map_name, map_list, max_row_w)
+    # Kanto dungeons, gyms, and major interiors: (id, label, anchor_map_name, map_list, max_row_w)
     kanto_dungeons = [
+        ("pewter_gym", "Pewter City Gym", "PewterCity", ["PewterCity_Gym"], 50),
+        ("cerulean_gym", "Cerulean City Gym", "CeruleanCity", ["CeruleanCity_Gym"], 50),
+        ("vermilion_gym", "Vermilion City Gym", "VermilionCity", ["VermilionCity_Gym"], 50),
+        ("celadon_gym", "Celadon City Gym", "CeladonCity", ["CeladonCity_Gym"], 50),
+        ("fuchsia_gym", "Fuchsia City Gym", "FuchsiaCity", ["FuchsiaCity_Gym"], 50),
+        ("saffron_gym", "Saffron City Gym", "SaffronCity", ["SaffronCity_Gym"], 50),
+        ("saffron_dojo", "Fighting Dojo", "SaffronCity", ["SaffronCity_Dojo"], 50),
+        ("cinnabar_gym", "Cinnabar Island Gym", "CinnabarIsland", ["CinnabarIsland_Gym"], 50),
+        ("viridian_gym", "Viridian City Gym", "ViridianCity", ["ViridianCity_Gym"], 50),
+        ("pokemon_league", "Pokémon League (Elite Four)", "IndigoPlateau_Exterior", ["PokemonLeague_LoreleisRoom", "PokemonLeague_BrunosRoom", "PokemonLeague_AgathasRoom", "PokemonLeague_LancesRoom", "PokemonLeague_ChampionsRoom"], 75),
         ("viridian_forest", "Viridian Forest", "Route2", ["ViridianForest"], 80),
         ("mt_moon", "Mt. Moon", "Route4", ["MtMoon_1F", "MtMoon_B1F", "MtMoon_B2F"], 90),
         ("ss_anne", "S.S. Anne", "VermilionCity", ["SSAnne_Exterior", "SSAnne_1F_Corridor", "SSAnne_2F_Corridor", "SSAnne_3F_Corridor", "SSAnne_B1F_Corridor", "SSAnne_Deck", "SSAnne_Kitchen", "SSAnne_CaptainsOffice"], 95),
@@ -1460,6 +1470,7 @@ def main():
         ("victory_road", "Victory Road", "Route23", ["VictoryRoad_1F", "VictoryRoad_2F", "VictoryRoad_3F"], 85),
         ("cerulean_cave", "Cerulean Cave", "CeruleanCity", ["CeruleanCave_1F", "CeruleanCave_2F", "CeruleanCave_B1F"], 90),
         ("route20_underwater", "Route 20 Underwater (FRLG+)", "Route20", ["Route20_Underwater"], 90),
+        ("underground_paths", "Underground Paths", "SaffronCity", ["UndergroundPath_NorthSouthTunnel", "UndergroundPath_EastWestTunnel"], 85),
     ]
 
     framed_kanto = set()
