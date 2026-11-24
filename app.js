@@ -889,7 +889,13 @@
       "wheel",
       (e) => {
         e.preventDefault();
-        const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+        // Normalize delta across trackpads (pixel mode) and mouse wheels (line/page mode)
+        let dy = e.deltaY;
+        if (e.deltaMode === 1) dy *= 24;
+        else if (e.deltaMode === 2) dy *= 300;
+        dy = Math.max(-80, Math.min(80, dy));
+        const sensitivity = e.ctrlKey ? 0.008 : 0.0022;
+        const factor = Math.exp(-dy * sensitivity);
         zoomAt(factor, e.clientX, e.clientY);
       },
       { passive: false }
