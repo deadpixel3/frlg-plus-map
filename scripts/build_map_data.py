@@ -772,7 +772,60 @@ def pack_components(components, maps_by_id, layouts, pad=4, max_row_w=160):
     return placed
 
 
-def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, bg_rgb=(15, 23, 42)):
+def read_png_palette(path):
+    """Extract RGB tuples from an indexed PNG's PLTE chunk."""
+    data = Path(path).read_bytes()
+    pos = 8
+    while pos < len(data):
+        ln, typ = struct.unpack(">I4s", data[pos:pos + 8])
+        chunk = data[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+        if typ == b"PLTE":
+            return [(chunk[i], chunk[i + 1], chunk[i + 2]) for i in range(0, len(chunk), 3)]
+        elif typ == b"IEND":
+            break
+    return [(0, 0, 0)] * 16
+
+
+def load_hm_sprites():
+    """Load 16x16 first-frame sprites (with index 0 transparent) for Cut trees, boulders, and smash rocks."""
+    misc = REPO / "graphics/object_events/pics/misc"
+    mapping = {
+        "OBJ_EVENT_GFX_CUT_TREE": misc / "cut_tree.png",
+        "OBJ_EVENT_GFX_PUSHABLE_BOULDER": misc / "strength_boulder.png",
+        "OBJ_EVENT_GFX_ROCK_SMASH_ROCK": misc / "rock_smash_rock.png",
+    }
+    sprites = {}
+    for gfx_id, path in mapping.items():
+        if not path.exists():
+            continue
+        w, h, px = read_indexed_png(path)
+        pal = read_png_palette(path)
+        # Extract first 16x16 frame as list of (dx, dy, r, g, b) for non-transparent pixels
+        pixels = []
+        for dy in range(min(16, h)):
+            for dx in range(min(16, w)):
+                cidx = px[dy * w + dx]
+                if cidx != 0 and cidx < len(pal):
+                    r, g, b = pal[cidx]
+                    pixels.append((dx, dy, r, g, b))
+        sprites[gfx_id] = pixels
+    return sprites
+
+
+def blit_sprite_into_canvas(canvas, canvas_w_px, canvas_h_px, x_px, y_px, sprite_pixels):
+    stride = canvas_w_px * 3
+    for dx, dy, r, g, b in sprite_pixels:
+        px = x_px + dx
+        py = y_px + dy
+        if 0 <= px < canvas_w_px and 0 <= py < canvas_h_px:
+            off = py * stride + px * 3
+            canvas[off] = r
+            canvas[off + 1] = g
+            canvas[off + 2] = b
+
+
+def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, hm_sprites=None, bg_rgb=(15, 23, 42)):
     """Render all maps in map_positions onto one PNG and return (width_px, height_px)."""
     pad = 2
     max_x = max(x + layouts[maps_by_id[m]["layout"]]["width"] for m, (x, y) in map_positions.items()) + pad
@@ -781,8 +834,17 @@ def render_layer(layer_id, map_positions, maps_by_id, layouts, ts_cache, bg_rgb=
     h_px = max_y * 16
     canvas = bytearray(bytes(bg_rgb) * (w_px * h_px))
     for mid, (mx, my) in map_positions.items():
-        layout = layouts[maps_by_id[mid]["layout"]]
+        mdata = maps_by_id[mid]
+        layout = layouts[mdata["layout"]]
         blit_map_into_canvas(canvas, w_px, mx, my, layout, ts_cache)
+        if hm_sprites:
+            for obj in mdata.get("object_events", []):
+                sp = hm_sprites.get(obj.get("graphics_id", ""))
+                if sp:
+                    blit_sprite_into_canvas(
+                        canvas, w_px, h_px,
+                        (mx + obj["x"]) * 16, (my + obj["y"]) * 16, sp
+                    )
     out_path = OUT_MAPS / f"{layer_id}.png"
     write_rgb_png(out_path, w_px, h_px, canvas)
     return w_px, h_px
@@ -1036,6 +1098,7 @@ def main():
 
     ts_defs = parse_tileset_definitions()
     ts_cache = TilesetCache(ts_defs)
+    hm_sprites = load_hm_sprites()
 
     items_db = parse_items()
     species_types = parse_species_types()
@@ -1157,7 +1220,7 @@ def main():
     print(f"2. Rendering {len(all_layers_def)} map layers to PNG and extracting markers...")
     for lid, label, group, pos in all_layers_def:
         t_layer = time.time()
-        w_px, h_px = render_layer(lid, pos, maps_by_id, layouts, ts_cache)
+        w_px, h_px = render_layer(lid, pos, maps_by_id, layouts, ts_cache, hm_sprites=hm_sprites)
 
         zones = []
         layer_markers = []
